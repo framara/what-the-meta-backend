@@ -12,8 +12,8 @@ function validateRegion(req, res, next) {
   if (!isValidRegion(region)) {
     return res.status(400).json({
       error: 'Invalid region',
-      message: `Region '${region}' is not supported. Supported regions: us, eu, kr, tw, cn`,
-      supportedRegions: ['us', 'eu', 'kr', 'tw', 'cn']
+      message: `Region '${region}' is not supported. Supported regions: us, eu, kr, tw`,
+      supportedRegions: ['us', 'eu', 'kr', 'tw']
     });
   }
   

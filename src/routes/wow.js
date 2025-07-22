@@ -5,6 +5,9 @@ const axios = require('axios');
 const { SEASON_DUNGEONS, SEASON_NAMES } = require('../config/constants');
 const fs = require('fs');
 const path = require('path');
+const db = require('../services/db');
+const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
+const pLimit = require('p-limit');
 
 const router = express.Router();
 
@@ -1095,6 +1098,104 @@ router.get('/advanced/mythic-keystone-season/:seasonId/name', async (req, res) =
   }
 });
 
+// Helper to map spec_id to class_id
+function getClassIdFromSpecId(specId) {
+  const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
+  return spec ? spec.classId : null;
+}
+// Helper to map spec_id to role
+function getRoleFromSpecId(specId) {
+  return WOW_SPEC_ROLES[specId] || null;
+}
+
+function dedupeGroupMembers(members) {
+  const seen = new Set();
+  return members.filter(m => {
+    const key = `${m.group_id}|${m.character_name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// Helper for batch insert
+async function batchInsertLeaderboardRuns(runs, client, batchSize = 500) {
+  for (let i = 0; i < runs.length; i += batchSize) {
+    const batch = runs.slice(i, i + batchSize);
+    if (batch.length === 0) continue;
+    console.log(`[DB] Inserting leaderboard_run batch: rows ${i + 1}-${i + batch.length} of ${runs.length}`);
+    const values = [];
+    const placeholders = [];
+    let idx = 1;
+    for (const run of batch) {
+      placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+      values.push(
+        run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region,
+        run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank, run.group_id
+      );
+    }
+    await client.query(
+      `INSERT INTO leaderboard_run
+        (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank, group_id)
+       VALUES ${placeholders.join(',')}
+       ON CONFLICT (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level)
+       DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, group_id = EXCLUDED.group_id;`,
+      values
+    );
+    console.log(`[DB] Inserted leaderboard_run batch: rows ${i + 1}-${i + batch.length}`);
+  }
+  if (runs.length > 0) {
+    console.log(`[DB] All leaderboard_run batches complete. Total rows: ${runs.length}`);
+  }
+}
+
+async function batchInsertGroupMembers(members, client, batchSize = 500) {
+  for (let i = 0; i < members.length; i += batchSize) {
+    let batch = members.slice(i, i + batchSize);
+    batch = dedupeGroupMembers(batch);
+    if (batch.length === 0) continue;
+    console.log(`[DB] Inserting group_member batch: rows ${i + 1}-${i + batch.length} of ${members.length}`);
+    const values = [];
+    const placeholders = [];
+    let idx = 1;
+    for (const m of batch) {
+      placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+      values.push(m.group_id, m.character_name, m.class_id, m.spec_id, m.role);
+    }
+    await client.query(
+      `INSERT INTO group_member (group_id, character_name, class_id, spec_id, role)
+       VALUES ${placeholders.join(',')}
+       ON CONFLICT (group_id, character_name) DO UPDATE SET
+         class_id = EXCLUDED.class_id,
+         spec_id = EXCLUDED.spec_id,
+         role = EXCLUDED.role;`,
+      values
+    );
+    console.log(`[DB] Inserted group_member batch: rows ${i + 1}-${i + batch.length}`);
+  }
+  if (members.length > 0) {
+    console.log(`[DB] All group_member batches complete. Total rows: ${members.length}`);
+  }
+}
+
+// Helper to ensure output directory exists
+function ensureOutputDir() {
+  const dir = path.join(__dirname, '../output');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir);
+  }
+  return dir;
+}
+
+// Helper for progress bar
+function printProgress(current, total, context = '') {
+  const percent = ((current / total) * 100).toFixed(2);
+  const barLength = 20;
+  const filled = Math.round((current / total) * barLength);
+  const bar = '[' + '#'.repeat(filled) + '-'.repeat(barLength - filled) + ']';
+  console.log(`[Progress] (${current}/${total}) ${bar} ${percent}% ${context}`);
+}
+
 // /wow/advanced/mythic-leaderboard/:seasonId/
 router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => {
   try {
@@ -1104,7 +1205,7 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
     // Get dungeons for the season
     const dungeons = SEASON_DUNGEONS[seasonNum];
     if (!dungeons || dungeons.length === 0) {
-      return res.status(404).json({ error: true, message: `No dungeons found for season ${seasonId}` });
+      return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
     }
     // Get periods for the season
     const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { ...req.query, id: seasonId });
@@ -1118,7 +1219,7 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
       return null;
     }).filter(Boolean);
     if (periods.length === 0) {
-      return res.status(404).json({ error: true, message: `No periods found for season ${seasonId}` });
+      return res.status(404).json({ status: 'NOT OK', error: `No periods found for season ${seasonId}` });
     }
     // Get all connected realm IDs (use all for full aggregation)
     const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
@@ -1127,36 +1228,146 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
       const match = obj.href.match(/connected-realm\/(\d+)/);
       return match ? match[1] : null;
     }).filter(Boolean);
-    // Aggregate all leaderboard data
-    const allResults = [];
-    const totalCalls = dungeons.length * periods.length * connectedRealmIds.length;
-    let callCount = 0;
+    // Aggregate all leaderboard data and save to JSON files
+    const pLimit = require('p-limit');
+    const limit = pLimit(10); // concurrency limit
+    const tasks = [];
+    let allFiles = [];
+    let fileCount = 0;
+    const totalFiles = dungeons.length * periods.length * connectedRealmIds.length; // or dungeons.length * connectedRealmIds.length for periodId endpoint
     for (const dungeonId of dungeons) {
-      console.log(`[Leaderboard] Processing dungeonId ${dungeonId}`);
       for (const periodId of periods) {
-        console.log(`[Leaderboard]  Processing periodId ${periodId} for dungeonId ${dungeonId}`);
         for (const connectedRealmId of connectedRealmIds) {
-          callCount++;
-          const percent = ((callCount / totalCalls) * 100).toFixed(2);
-          const barLength = 20;
-          const filled = Math.round((callCount / totalCalls) * barLength);
-          const bar = '[' + '#'.repeat(filled) + '-'.repeat(barLength - filled) + ']';
-          console.log(`[Leaderboard]   (${callCount}/${totalCalls}) ${bar} ${percent}% Data: dungeonId ${dungeonId}, periodId ${periodId}, connectedRealmId ${connectedRealmId}`);
-          try {
-            const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
-            if (lb.data) {
-              allResults.push({ dungeonId, periodId, connectedRealmId, data: lb.data });
+          tasks.push(limit(async () => {
+            try {
+              const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
+              if (lb.data && Array.isArray(lb.data.leading_groups)) {
+                const runs = [];
+                for (const group of lb.data.leading_groups) {
+                  const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+                  const groupKey = memberIds.join('-');
+                  runs.push({
+                    dungeon_id: parseInt(dungeonId, 10),
+                    period_id: parseInt(periodId, 10),
+                    realm_id: parseInt(connectedRealmId, 10),
+                    season_id: seasonNum,
+                    region,
+                    completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                    duration_ms: group.duration,
+                    keystone_level: group.keystone_level,
+                    score: group.mythic_rating ? group.mythic_rating.rating : null,
+                    rank: group.ranking,
+                    group_key: groupKey,
+                    members: group.members.map(member => {
+                      const specId = member.specialization ? member.specialization.id : null;
+                      return {
+                        character_name: member.profile.name,
+                        class_id: getClassIdFromSpecId(specId),
+                        spec_id: specId,
+                        role: getRoleFromSpecId(specId)
+                      };
+                    })
+                  });
+                }
+                const outputDir = ensureOutputDir();
+                const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+                const filePath = path.join(outputDir, fileName);
+                fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+                //console.log(`[JSON] Wrote file: ${fileName} (${runs.length} runs)`);
+                allFiles.push(fileName);
+                fileCount++;
+                printProgress(fileCount, totalFiles, `File: ${fileName}`);
+              }
+            } catch (e) {
+              console.error(`[API ERROR] dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
             }
-          } catch (e) {
-            // Ignore 404s and continue
-            console.warn(`[Leaderboard]   No data for dungeonId ${dungeonId}, periodId ${periodId}, connectedRealmId ${connectedRealmId}`);
-          }
+          }));
         }
       }
     }
-    res.json({ seasonId, dungeons, periods, results: allResults });
+    await Promise.allSettled(tasks);
+    res.json({ status: 'OK', message: 'Data written to JSON files' });
   } catch (error) {
-    next(error);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// /wow/advanced/mythic-leaderboard/:seasonId/:periodId
+router.get('/advanced/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => {
+  try {
+    const { region } = req;
+    const { seasonId, periodId } = req.params;
+    const seasonNum = parseInt(seasonId, 10);
+    // Get dungeons for the season
+    const dungeons = SEASON_DUNGEONS[seasonNum];
+    if (!dungeons || dungeons.length === 0) {
+      return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
+    }
+    // Get all connected realm IDs (use all for full aggregation)
+    const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
+    const connectedRealms = realmsResp.data.connected_realms || [];
+    const connectedRealmIds = connectedRealms.map(obj => {
+      const match = obj.href.match(/connected-realm\/(\d+)/);
+      return match ? match[1] : null;
+    }).filter(Boolean);
+    // Prepare for parallel API calls
+    const pLimit = require('p-limit');
+    const limit = pLimit(10); // concurrency limit
+    const tasks = [];
+    let allFiles = [];
+    let fileCount = 0;
+    const totalFiles = dungeons.length * connectedRealmIds.length; // or dungeons.length * connectedRealmIds.length for periodId endpoint
+    for (const dungeonId of dungeons) {
+      for (const connectedRealmId of connectedRealmIds) {
+        tasks.push(limit(async () => {
+          try {
+            const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
+            if (lb.data && Array.isArray(lb.data.leading_groups)) {
+              const runs = [];
+              for (const group of lb.data.leading_groups) {
+                const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+                const groupKey = memberIds.join('-');
+                runs.push({
+                  dungeon_id: parseInt(dungeonId, 10),
+                  period_id: parseInt(periodId, 10),
+                  realm_id: parseInt(connectedRealmId, 10),
+                  season_id: seasonNum,
+                  region,
+                  completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                  duration_ms: group.duration,
+                  keystone_level: group.keystone_level,
+                  score: group.mythic_rating ? group.mythic_rating.rating : null,
+                  rank: group.ranking,
+                  group_key: groupKey,
+                  members: group.members.map(member => {
+                    const specId = member.specialization ? member.specialization.id : null;
+                    return {
+                      character_name: member.profile.name,
+                      class_id: getClassIdFromSpecId(specId),
+                      spec_id: specId,
+                      role: getRoleFromSpecId(specId)
+                    };
+                  })
+                });
+              }
+              const outputDir = ensureOutputDir();
+              const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+              const filePath = path.join(outputDir, fileName);
+              fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+              allFiles.push(fileName);
+              fileCount++;
+              printProgress(fileCount, totalFiles, `File: ${fileName}`);
+            }
+          } catch (e) {
+            console.error(`[API ERROR] dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
+          }
+        }));
+      }
+    }
+    await Promise.allSettled(tasks);
+    res.json({ status: 'OK', message: 'Data written to JSON files' });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
 

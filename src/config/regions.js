@@ -2,40 +2,35 @@ const REGIONS = {
   us: {
     name: 'Americas',
     locale: 'en_US',
-    oauthUrl: 'https://us.battle.net/oauth/token',
+    oauthUrl: 'https://oauth.battle.net/token',
     apiUrl: 'https://us.api.blizzard.com'
   },
   eu: {
     name: 'Europe',
     locale: 'en_GB',
-    oauthUrl: 'https://eu.battle.net/oauth/token',
+    oauthUrl: 'https://oauth.battle.net/token',
     apiUrl: 'https://eu.api.blizzard.com'
   },
   kr: {
     name: 'Korea',
     locale: 'ko_KR',
-    oauthUrl: 'https://kr.battle.net/oauth/token',
+    oauthUrl: 'https://oauth.battle.net/token',
     apiUrl: 'https://kr.api.blizzard.com'
   },
   tw: {
     name: 'Taiwan',
     locale: 'zh_TW',
-    oauthUrl: 'https://tw.battle.net/oauth/token',
+    oauthUrl: 'https://oauth.battle.net/token',
     apiUrl: 'https://tw.api.blizzard.com'
-  },
-  cn: {
-    name: 'China',
-    locale: 'zh_CN',
-    oauthUrl: 'https://www.battlenet.com.cn/oauth/token',
-    apiUrl: 'https://gateway.battlenet.com.cn'
   }
+  // (CN omitted)
 };
 
 const DEFAULT_REGION = 'us';
 
 /**
  * Get region configuration
- * @param {string} region - Region code (us, eu, kr, tw, cn)
+ * @param {string} region - Region code (us, eu, apac)
  * @returns {Object} Region configuration
  */
 function getRegion(region = DEFAULT_REGION) {
