@@ -159,6 +159,16 @@ async function batchInsertGroupMembers(members, client, batchSize = 500) {
   }
 }
 
+// Helper to deduplicate run_group_member batch by (run_id, character_name)
+function dedupeRunGroupMembers(members) {
+  const seen = new Set();
+  return members.filter(([runId, characterName]) => {
+    const key = `${runId}|${characterName}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 // --- HTTP ENDPOINTS ---
 router.post('/populate-dungeons', async (req, res) => {
   try {
@@ -242,7 +252,8 @@ router.post('/import-leaderboard-json', async (req, res) => {
       }
       const batchSize = 500;
       for (let i = 0; i < allMembers.length; i += batchSize) {
-        const batch = allMembers.slice(i, i + batchSize);
+        let batch = allMembers.slice(i, i + batchSize);
+        batch = dedupeRunGroupMembers(batch);
         if (batch.length === 0) continue;
         const values = [];
         const placeholders = [];
@@ -326,7 +337,8 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         }
         const batchSize = 500;
         for (let i = 0; i < allMembers.length; i += batchSize) {
-          const batch = allMembers.slice(i, i + batchSize);
+          let batch = allMembers.slice(i, i + batchSize);
+          batch = dedupeRunGroupMembers(batch);
           if (batch.length === 0) continue;
           const values = [];
           const placeholders = [];
