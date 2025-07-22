@@ -10,6 +10,7 @@ const adminRoutes = require('./routes/admin');
 const errorHandler = require('./middleware/error-handler');
 const rateLimit = require('./middleware/rate-limit');
 const { populateDungeons, populateSeasons, populatePeriods, populateRealms } = require('./routes/admin');
+const metaRoutes = require('./routes/meta');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -39,6 +40,7 @@ app.use('/battle-net', battleNetRoutes);
 app.use('/wow', wowRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
+app.use('/meta', metaRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

@@ -232,7 +232,7 @@ router.post('/import-leaderboard-json', async (req, res) => {
           `INSERT INTO leaderboard_run
             (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level)
+           ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
            DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank
            RETURNING id`,
           [run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank]
@@ -325,12 +325,12 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         for (const run of runs) {
           const runInsert = await client.query(
             `INSERT INTO leaderboard_run
-              (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank)
+              (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-             ON CONFLICT (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level)
-             DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank
+             ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+             DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id
              RETURNING id`,
-            [run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank]
+            [run.region, run.season_id, run.period_id, run.dungeon_id, run.realm_id, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank]
           );
           const runId = runInsert.rows[0].id;
           if (run.members && run.members.length > 0) {

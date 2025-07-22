@@ -1,0 +1,76 @@
+{
+  "info": {
+    "name": "WoW API Proxy & Leaderboard",
+    "description": "Comprehensive Postman collection for all endpoints in the WoW API Proxy project.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "region", "value": "us" },
+    { "key": "classId", "value": "1" },
+    { "key": "raceId", "value": "1" },
+    { "key": "itemId", "value": "19019" },
+    { "key": "realmSlug", "value": "ragnaros" },
+    { "key": "mountId", "value": "6" },
+    { "key": "petId", "value": "39" },
+    { "key": "specializationId", "value": "577" },
+    { "key": "dungeonId", "value": "247" },
+    { "key": "periodId", "value": "1001" },
+    { "key": "seasonId", "value": "14" },
+    { "key": "filename", "value": "eu-s14-p1001-d247.json" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" }
+    },
+    {
+      "name": "Game Data",
+      "item": [
+        { "name": "Achievements (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/achievements?region={{region}}" } },
+        { "name": "Achievement (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/achievements/{{itemId}}?region={{region}}" } },
+        { "name": "Classes (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/classes?region={{region}}" } },
+        { "name": "Class (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/classes/{{classId}}?region={{region}}" } },
+        { "name": "Races (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/races?region={{region}}" } },
+        { "name": "Race (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/races/{{raceId}}?region={{region}}" } },
+        { "name": "Specializations (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/specializations?region={{region}}" } },
+        { "name": "Specialization (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/specializations/{{specializationId}}?region={{region}}" } },
+        { "name": "Items (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/items?region={{region}}" } },
+        { "name": "Item (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/items/{{itemId}}?region={{region}}" } },
+        { "name": "Realms (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/realms?region={{region}}" } },
+        { "name": "Realm (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/realms/{{realmSlug}}?region={{region}}" } },
+        { "name": "Mounts (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mounts?region={{region}}" } },
+        { "name": "Mount (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mounts/{{mountId}}?region={{region}}" } },
+        { "name": "Pets (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/pets?region={{region}}" } },
+        { "name": "Pet (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/pets/{{petId}}?region={{region}}" } },
+        { "name": "Dungeons (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mythic-keystone-dungeons?region={{region}}" } },
+        { "name": "Dungeon (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mythic-keystone-dungeons/{{dungeonId}}?region={{region}}" } },
+        { "name": "Periods (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mythic-keystone-periods?region={{region}}" } },
+        { "name": "Seasons (Index)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mythic-keystone-seasons?region={{region}}" } },
+        { "name": "Season (Detail)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/game-data/mythic-keystone-seasons/{{seasonId}}?region={{region}}" } }
+      ]
+    },
+    {
+      "name": "Advanced",
+      "item": [
+        { "name": "Mythic Leaderboard (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{seasonId}}?region={{region}}" } },
+        { "name": "Mythic Leaderboard (Season/Period)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{seasonId}}/{{periodId}}?region={{region}}" } }
+      ]
+    },
+    {
+      "name": "Meta",
+      "item": [
+        { "name": "Top Keys (Global)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&limit=100" } },
+        { "name": "Top Keys (Period)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&limit=100" } },
+        { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        { "name": "Import Leaderboard JSON", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"filename\": \"{{filename}}\"\n}" }, "url": "{{baseUrl}}/admin/import-leaderboard-json" } },
+        { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } }
+      ]
+    }
+  ]
+}

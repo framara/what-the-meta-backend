@@ -1,304 +1,191 @@
-# WoW API Proxy - API Documentation
+# WoW API Proxy & Leaderboard - API Documentation
 
 ## Overview
 
-This API proxy abstracts the Blizzard OAuth flow and regional endpoint handling for World of Warcraft API calls. It forwards responses from the Blizzard API as-is to consumers.
+This API proxy provides a unified interface for Blizzard's World of Warcraft Game Data API, advanced leaderboard aggregation, and a robust import/ETL pipeline for meta analysis. It abstracts OAuth, regional routing, and data aggregation for both consumers and admin users.
 
 ## Base URL
-
 ```
 http://localhost:3000
 ```
 
-## Authentication
-
-The proxy handles Blizzard OAuth automatically. No authentication is required from API consumers.
-
 ## Regional Support
-
-All endpoints support regional routing via the `region` query parameter:
-
+All endpoints support the following regions via the `region` query parameter:
 - `us` - Americas (default)
 - `eu` - Europe
 - `kr` - Korea
 - `tw` - Taiwan
-- `cn` - China
+
+## Authentication
+- The proxy handles Blizzard OAuth automatically. No authentication is required from API consumers for public endpoints.
+
+---
 
 ## Endpoints
 
 ### Health Check
-
 #### GET /health
 Returns the overall health status of the API proxy.
 
-**Response:**
-```json
-{
-  "status": "OK",
-  "timestamp": "2024-01-01T00:00:00.000Z",
-  "service": "WoW API Proxy"
-}
-```
+---
 
-### Battle.net OAuth
-
-#### GET /battle-net/oauth/token?region=us
-Get OAuth token for a specific region.
-
-**Parameters:**
-- `region` (optional): Region code (default: us)
-
-**Response:**
-```json
-{
-  "success": true,
-  "region": "us",
-  "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "tokenInfo": {
-    "hasToken": true,
-    "expiresAt": 1704067200000,
-    "isExpired": false,
-    "timeUntilExpiry": 3600000
-  },
-  "timestamp": "2024-01-01T00:00:00.000Z"
-}
-```
-
-#### GET /battle-net/regions
-Get all supported regions.
-
-**Response:**
-```json
-{
-  "success": true,
-  "regions": {
-    "us": {
-      "name": "Americas",
-      "locale": "en_US",
-      "oauthUrl": "https://us.battle.net/oauth/token",
-      "apiUrl": "https://us.api.blizzard.com"
-    },
-    "eu": {
-      "name": "Europe",
-      "locale": "en_GB",
-      "oauthUrl": "https://eu.battle.net/oauth/token",
-      "apiUrl": "https://eu.api.blizzard.com"
-    }
-  },
-  "count": 5,
-  "timestamp": "2024-01-01T00:00:00.000Z"
-}
-```
-
-### World of Warcraft Game Data
+### Game Data Endpoints
+All Blizzard WoW Game Data endpoints are proxied as-is. Example:
 
 #### GET /wow/game-data/achievements?region=us
-Get all achievements.
+#### GET /wow/game-data/classes?region=eu
+#### GET /wow/game-data/items/:id?region=kr
 
-**Parameters:**
-- `region` (optional): Region code (default: us)
+- See Blizzard's official documentation for full endpoint list and parameters.
+- All responses are forwarded as-is from Blizzard.
 
-**Response:** Raw Blizzard API response
+---
 
-#### GET /wow/game-data/achievements/:id?region=us
-Get specific achievement by ID.
+### Advanced Aggregation Endpoints
 
-**Parameters:**
-- `id`: Achievement ID
-- `region` (optional): Region code (default: us)
+#### GET /wow/advanced/mythic-leaderboard/:seasonId/
+Aggregates all runs for all dungeons, periods, and realms for a season. Writes results to JSON files in `./output`.
 
-#### GET /wow/game-data/classes?region=us
-Get all playable classes.
+#### GET /wow/advanced/mythic-leaderboard/:seasonId/:periodId
+Aggregates all runs for all dungeons and realms for a specific period. Writes results to JSON files in `./output`.
 
-#### GET /wow/game-data/classes/:id?region=us
-Get specific class by ID.
+- These endpoints are for ETL/data collection. They do not return the full data in the HTTP response.
 
-#### GET /wow/game-data/races?region=us
-Get all playable races.
+---
 
-#### GET /wow/game-data/races/:id?region=us
-Get specific race by ID.
+### Meta/Consumer Endpoints
 
-#### GET /wow/game-data/specializations?region=us
-Get all specializations.
+#### GET /meta/top-keys
+Returns top N leaderboard runs, with group composition, for meta analysis.
 
-#### GET /wow/game-data/specializations/:id?region=us
-Get specific specialization by ID.
+**Query Parameters:**
+- `season_id` (required): Season to query
+- `period_id` (optional): Filter by period
+- `dungeon_id` (optional): Filter by dungeon
+- `limit` (optional, default 100, max 500): Number of results per request
+- `offset` (optional, default 0): For pagination
 
-#### GET /wow/game-data/items?region=us
-Get all items.
+**Behavior:**
+- If only `season_id` is provided: returns top N globally for the season
+- If `season_id` and `period_id` are provided: returns top N for that season/period
+- If `dungeon_id` is provided: returns top N for that group (season/period/dungeon)
 
-#### GET /wow/game-data/items/:id?region=us
-Get specific item by ID.
+**Example Requests:**
+- `/meta/top-keys?season_id=14` (top N globally for season 14)
+- `/meta/top-keys?season_id=14&period_id=1001` (top N for period 1001, season 14)
+- `/meta/top-keys?season_id=14&period_id=1001&dungeon_id=247` (top N for dungeon 247, period 1001, season 14)
+- `/meta/top-keys?season_id=14&limit=50&offset=100` (pagination)
 
-#### GET /wow/game-data/realms?region=us
-Get all realms.
-
-#### GET /wow/game-data/realms/:slug?region=us
-Get specific realm by slug.
-
-#### GET /wow/game-data/mounts?region=us
-Get all mounts.
-
-#### GET /wow/game-data/mounts/:id?region=us
-Get specific mount by ID.
-
-#### GET /wow/game-data/pets?region=us
-Get all pets.
-
-#### GET /wow/game-data/pets/:id?region=us
-Get specific pet by ID.
-
-### World of Warcraft Profile
-
-#### GET /wow/profile/user?region=us
-Get user profile (requires user token).
-
-#### GET /wow/profile/character/:realmSlug/:characterName?region=us
-Get character profile.
-
-**Parameters:**
-- `realmSlug`: Realm slug (e.g., "ragnaros")
-- `characterName`: Character name (e.g., "charactername")
-- `region` (optional): Region code (default: us)
-
-#### GET /wow/profile/character/:realmSlug/:characterName/achievements?region=us
-Get character achievements.
-
-#### GET /wow/profile/character/:realmSlug/:characterName/equipment?region=us
-Get character equipment.
-
-#### GET /wow/profile/character/:realmSlug/:characterName/specializations?region=us
-Get character specializations.
-
-#### GET /wow/profile/character/:realmSlug/:characterName/talents?region=us
-Get character talents.
-
-## Usage Examples
-
-### cURL Examples
-
-```bash
-# Get achievements for US region
-curl "http://localhost:3000/wow/game-data/achievements?region=us"
-
-# Get character profile for EU region
-curl "http://localhost:3000/wow/profile/character/ragnaros/charactername?region=eu"
-
-# Get item details for Korea region
-curl "http://localhost:3000/wow/game-data/items/19019?region=kr"
-
-# Get OAuth token for Taiwan region
-curl "http://localhost:3000/battle-net/oauth/token?region=tw"
+**Example Response:**
+```json
+[
+  {
+    "id": 12345,
+    "season_id": 14,
+    "period_id": 1001,
+    "dungeon_id": 247,
+    "realm_id": 509,
+    "region": "eu",
+    "completed_at": "2024-05-01T12:34:56.000Z",
+    "duration_ms": 1234567,
+    "keystone_level": 22,
+    "score": 312.5,
+    "rank": 1,
+    "members": [
+      { "character_name": "Playerone", "class_id": 1, "spec_id": 71, "role": "dps" },
+      ...
+    ]
+  },
+  ...
+]
 ```
 
-### JavaScript Examples
+---
 
-```javascript
-// Using fetch
-const response = await fetch('http://localhost:3000/wow/game-data/achievements?region=us');
-const data = await response.json();
+### Admin/Import Endpoints
 
-// Using axios
-const axios = require('axios');
-const response = await axios.get('http://localhost:3000/wow/game-data/classes?region=eu');
-const data = response.data;
-```
+#### POST /admin/import-leaderboard-json
+Import a single JSON file from `./output` into the database.
+- **Body:** `{ "filename": "eu-s14-p1001-d247.json" }`
+- **Returns:** Import summary
 
-### Python Examples
+#### POST /admin/import-all-leaderboard-json
+Import all JSON files in `./output` into the database (batched, parallelized, progress bar in logs).
+- **Returns:** Import summary
 
-```python
-import requests
+---
 
-# Get achievements
-response = requests.get('http://localhost:3000/wow/game-data/achievements?region=us')
-data = response.json()
+## Import/ETL Workflow
 
-# Get character profile
-response = requests.get('http://localhost:3000/wow/profile/character/ragnaros/charactername?region=eu')
-data = response.json()
-```
+1. Use advanced endpoints to generate JSON files in `./output`:
+   - `/wow/advanced/mythic-leaderboard/:seasonId/`
+   - `/wow/advanced/mythic-leaderboard/:seasonId/:periodId`
+2. Import data into the database:
+   - `POST /admin/import-leaderboard-json` (single file)
+   - `POST /admin/import-all-leaderboard-json` (all files, batched)
+3. After import, run:
+   ```sql
+   REFRESH MATERIALIZED VIEW top_keys_per_group;
+   REFRESH MATERIALIZED VIEW top_keys_global;
+   REFRESH MATERIALIZED VIEW top_keys_per_period;
+   ```
+
+---
+
+## Database Structure
+
+- See `db/db_structure.sql` for full schema.
+- Main tables: `leaderboard_run`, `run_group_member`, `dungeon`, `period`, `realm`, `season`
+- Materialized views: `top_keys_per_group`, `top_keys_global`, `top_keys_per_period`
+- Indexes for fast filtering and sorting
+
+---
 
 ## Error Handling
 
-The API returns standard HTTP status codes:
-
-- `200` - Success
-- `400` - Bad Request (invalid region, missing parameters)
-- `401` - Unauthorized (OAuth issues)
-- `404` - Not Found (invalid endpoint)
-- `429` - Too Many Requests (rate limited)
-- `500` - Internal Server Error
-- `503` - Service Unavailable (Blizzard API issues)
-
-### Error Response Format
-
+- Standard HTTP status codes (`200`, `400`, `404`, `500`, etc.)
+- Error responses:
 ```json
 {
   "error": true,
   "message": "Error description",
   "timestamp": "2024-01-01T00:00:00.000Z",
-  "path": "/wow/game-data/achievements",
+  "path": "/meta/top-keys",
   "method": "GET"
 }
 ```
 
+---
+
 ## Rate Limiting
+- 100 requests per 15 minutes per IP
+- Headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 
-The API implements rate limiting to protect against abuse:
-
-- **Window**: 15 minutes
-- **Max Requests**: 100 requests per window
-- **Headers**: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
-
-## Caching
-
-- **OAuth Tokens**: Cached for 1 hour with automatic refresh
-- **API Responses**: Forwarded as-is from Blizzard API
+---
 
 ## Security
+- Helmet.js for security headers
+- CORS enabled
+- Input validation for all parameters
 
-- **Helmet.js**: Security headers
-- **CORS**: Cross-origin resource sharing enabled
-- **Rate Limiting**: Protection against abuse
-- **Input Validation**: Region and parameter validation
+---
 
-## Development
+## Environment Variables
 
-### Starting the Server
-
-```bash
-# Development mode with auto-restart
-npm run dev
-
-# Production mode
-npm start
+Set these in your `.env` file:
 ```
-
-### Environment Variables
-
-Create a `.env` file based on `env.example`:
-
-```env
 BLIZZARD_CLIENT_ID=your_client_id_here
 BLIZZARD_CLIENT_SECRET=your_client_secret_here
 PORT=3000
 NODE_ENV=development
-RATE_LIMIT_WINDOW_MS=900000
-RATE_LIMIT_MAX_REQUESTS=100
+PGHOST=localhost
+PGPORT=5432
+PGUSER=wowuser
+PGPASSWORD=yourpassword
+PGDATABASE=wow_leaderboard
 ```
 
-### Testing
-
-```bash
-# Run the test script
-node test.js
-
-# Test specific endpoints
-curl "http://localhost:3000/health"
-curl "http://localhost:3000/battle-net/regions"
-```
+---
 
 ## Support
-
 For issues or questions, check the project README or create an issue in the repository. 
