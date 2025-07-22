@@ -287,6 +287,14 @@ router.post('/import-leaderboard-json', async (req, res) => {
   }
 });
 
+// Helper to print a progress bar for file import
+function printFileImportProgress(current, total) {
+  const percent = ((current / total) * 100).toFixed(1);
+  const barLength = 20;
+  const filled = Math.round((current / total) * barLength);
+  const bar = '[' + '#'.repeat(filled) + '-'.repeat(barLength - filled) + ']';
+  console.log(`[IMPORT ALL] Progress: ${bar} ${current}/${total} files (${percent}%)`);
+}
 // --- Admin import all endpoint ---
 router.post('/import-all-leaderboard-json', async (req, res) => {
   try {
@@ -300,9 +308,11 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     }
     let totalInserted = 0;
     let results = [];
-    const limit = pLimit(4); // Limit to 4 files in parallel
+    const limit = pLimit(8); // Limit to 4 files in parallel
+    let completed = 0;
+    const totalFiles = files.length;
     const fileTasks = files.map(filename => limit(async () => {
-      console.log(`[IMPORT ALL] Processing file: ${filename}`);
+      //console.log(`[IMPORT ALL] Processing file: ${filename}`);
       const filePath = path.join(outputDir, filename);
       const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       const pool = db.pool;
@@ -358,7 +368,7 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
           );
         }
         await client.query('COMMIT');
-        console.log(`[IMPORT ALL] Import complete for file: ${filename}`);
+        //console.log(`[IMPORT ALL] Import complete for file: ${filename}`);
         return { filename, inserted };
       } catch (err) {
         await client.query('ROLLBACK');
@@ -366,6 +376,8 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         return { filename, error: err.message };
       } finally {
         client.release();
+        completed++;
+        printFileImportProgress(completed, totalFiles);
       }
     }));
     const settled = await Promise.allSettled(fileTasks);
