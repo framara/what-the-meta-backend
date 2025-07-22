@@ -69,7 +69,8 @@
       "name": "Admin",
       "item": [
         { "name": "Import Leaderboard JSON", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"filename\": \"{{filename}}\"\n}" }, "url": "{{baseUrl}}/admin/import-leaderboard-json" } },
-        { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } }
+        { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } },
+        { "name": "Import Leaderboard Copy", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-leaderboard-copy" } }
       ]
     }
   ]

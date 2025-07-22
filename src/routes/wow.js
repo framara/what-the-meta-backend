@@ -8,6 +8,7 @@ const path = require('path');
 const db = require('../services/db');
 const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
 const pLimit = require('p-limit');
+const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
 
@@ -1246,6 +1247,7 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
                 for (const group of lb.data.leading_groups) {
                   const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
                   const groupKey = memberIds.join('-');
+                  const run_guid = uuidv4();
                   runs.push({
                     dungeon_id: parseInt(dungeonId, 10),
                     period_id: parseInt(periodId, 10),
@@ -1257,14 +1259,15 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
                     keystone_level: group.keystone_level,
                     score: group.mythic_rating ? group.mythic_rating.rating : null,
                     rank: group.ranking,
-                    group_key: groupKey,
+                    run_guid,
                     members: group.members.map(member => {
                       const specId = member.specialization ? member.specialization.id : null;
                       return {
                         character_name: member.profile.name,
                         class_id: getClassIdFromSpecId(specId),
                         spec_id: specId,
-                        role: getRoleFromSpecId(specId)
+                        role: getRoleFromSpecId(specId),
+                        run_guid
                       };
                     })
                   });
@@ -1327,6 +1330,7 @@ router.get('/advanced/mythic-leaderboard/:seasonId/:periodId', async (req, res, 
               for (const group of lb.data.leading_groups) {
                 const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
                 const groupKey = memberIds.join('-');
+                const run_guid = uuidv4();
                 runs.push({
                   dungeon_id: parseInt(dungeonId, 10),
                   period_id: parseInt(periodId, 10),
@@ -1338,14 +1342,15 @@ router.get('/advanced/mythic-leaderboard/:seasonId/:periodId', async (req, res, 
                   keystone_level: group.keystone_level,
                   score: group.mythic_rating ? group.mythic_rating.rating : null,
                   rank: group.ranking,
-                  group_key: groupKey,
+                  run_guid,
                   members: group.members.map(member => {
                     const specId = member.specialization ? member.specialization.id : null;
                     return {
                       character_name: member.profile.name,
                       class_id: getClassIdFromSpecId(specId),
                       spec_id: specId,
-                      role: getRoleFromSpecId(specId)
+                      role: getRoleFromSpecId(specId),
+                      run_guid
                     };
                   })
                 });

@@ -42,6 +42,7 @@ CREATE TABLE public.season (
 
 CREATE TABLE public.leaderboard_run (
     id serial PRIMARY KEY,
+    run_guid uuid UNIQUE,
     region character varying(8),
     season_id integer,
     period_id integer,
@@ -56,12 +57,12 @@ CREATE TABLE public.leaderboard_run (
 );
 
 CREATE TABLE public.run_group_member (
-    run_id integer NOT NULL REFERENCES public.leaderboard_run(id) ON DELETE CASCADE,
+    run_guid uuid REFERENCES public.leaderboard_run(run_guid) ON DELETE CASCADE,
     character_name character varying(64) NOT NULL,
     class_id integer,
     spec_id integer,
     role character varying(16),
-    PRIMARY KEY (run_id, character_name)
+    PRIMARY KEY (run_guid, character_name)
 );
 
 -- Foreign keys
@@ -110,7 +111,7 @@ SELECT
       'role', rgm.role
     ) ORDER BY rgm.character_name)
     FROM run_group_member rgm
-    WHERE rgm.run_id = r.id
+    WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
 WHERE r.rn <= 100;
@@ -143,7 +144,7 @@ SELECT
       'role', rgm.role
     ) ORDER BY rgm.character_name)
     FROM run_group_member rgm
-    WHERE rgm.run_id = r.id
+    WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
 WHERE r.rn <= 100;
@@ -176,7 +177,7 @@ SELECT
       'role', rgm.role
     ) ORDER BY rgm.character_name)
     FROM run_group_member rgm
-    WHERE rgm.run_id = r.id
+    WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
 WHERE r.rn <= 100;
@@ -187,4 +188,13 @@ CREATE INDEX IF NOT EXISTS idx_top_keys_per_period
 
 -- NOTE: Refresh this view after importing new leaderboard data:
 -- REFRESH MATERIALIZED VIEW top_keys_per_period;
+
+-- Staging table for bulk import of run_group_member
+CREATE TABLE IF NOT EXISTS public.run_group_member_staging (
+    run_guid uuid,
+    character_name character varying(64),
+    class_id integer,
+    spec_id integer,
+    role character varying(16)
+);
 

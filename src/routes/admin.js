@@ -6,6 +6,11 @@ const fs = require('fs');
 const path = require('path');
 const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
 const pLimit = require('p-limit');
+const { pipeline } = require('stream');
+const { promisify } = require('util');
+const copyFrom = require('pg-copy-streams').from;
+const os = require('os');
+const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
 
@@ -228,14 +233,15 @@ router.post('/import-leaderboard-json', async (req, res) => {
       // 1. Insert all runs, collect runIds and members
       let runIdToMembers = [];
       for (const run of runs) {
+        const runGuid = run.run_guid;
         const runInsert = await client.query(
           `INSERT INTO leaderboard_run
-            (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
            DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank
            RETURNING id`,
-          [run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank]
+          [run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank, runGuid]
         );
         const runId = runInsert.rows[0].id;
         if (run.members && run.members.length > 0) {
@@ -247,7 +253,8 @@ router.post('/import-leaderboard-json', async (req, res) => {
       let allMembers = [];
       for (const { runId, members } of runIdToMembers) {
         for (const m of members) {
-          allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role]);
+          const memberRunGuid = run.run_guid;
+          allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role, memberRunGuid]);
         }
       }
       const batchSize = 500;
@@ -259,11 +266,11 @@ router.post('/import-leaderboard-json', async (req, res) => {
         const placeholders = [];
         let idx = 1;
         for (const row of batch) {
-          placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+          placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
           values.push(...row);
         }
         await client.query(
-          `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role)
+          `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role, run_guid)
            VALUES ${placeholders.join(',')}
            ON CONFLICT (run_id, character_name) DO UPDATE SET
              class_id = EXCLUDED.class_id,
@@ -323,14 +330,15 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         // 1. Insert all runs, collect runIds and members
         let runIdToMembers = [];
         for (const run of runs) {
+          const runGuid = run.run_guid;
           const runInsert = await client.query(
             `INSERT INTO leaderboard_run
-              (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+              (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
              ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
              DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id
              RETURNING id`,
-            [run.region, run.season_id, run.period_id, run.dungeon_id, run.realm_id, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank]
+            [run.region, run.season_id, run.period_id, run.dungeon_id, run.realm_id, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank, runGuid]
           );
           const runId = runInsert.rows[0].id;
           if (run.members && run.members.length > 0) {
@@ -342,7 +350,8 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         let allMembers = [];
         for (const { runId, members } of runIdToMembers) {
           for (const m of members) {
-            allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role]);
+            const memberRunGuid = run.run_guid;
+            allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role, memberRunGuid]);
           }
         }
         const batchSize = 500;
@@ -354,11 +363,11 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
           const placeholders = [];
           let idx = 1;
           for (const row of batch) {
-            placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+            placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
             values.push(...row);
           }
           await client.query(
-            `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role)
+            `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role, run_guid)
              VALUES ${placeholders.join(',')}
              ON CONFLICT (run_id, character_name) DO UPDATE SET
                class_id = EXCLUDED.class_id,
@@ -393,6 +402,153 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     }
     res.json({ status: 'OK', totalInserted, results });
   } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// --- Bulk COPY import endpoint ---
+router.post('/import-leaderboard-copy', async (req, res) => {
+  try {
+    const outputDir = path.join(__dirname, '../output');
+    if (!fs.existsSync(outputDir)) {
+      return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
+    }
+    const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.json'));
+    if (files.length === 0) {
+      return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
+    }
+    console.log(`[COPY IMPORT] Starting bulk import for ${files.length} files...`);
+    let totalRuns = 0;
+    let totalMembers = 0;
+    let results = [];
+    const pool = db.pool;
+    let completed = 0;
+    // Deduplicate runs across all files before writing CSVs
+    const allRuns = [];
+    const allMembers = [];
+    const runKeySet = new Set();
+    for (const filename of files) {
+      const filePath = path.join(outputDir, filename);
+      const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      for (const run of runs) {
+        const key = [
+          run.dungeon_id,
+          run.period_id,
+          run.season_id,
+          run.region,
+          run.completed_at,
+          run.duration_ms,
+          run.keystone_level,
+          run.score
+        ].join('|');
+        if (!runKeySet.has(key)) {
+          runKeySet.add(key);
+          allRuns.push({ run, filename });
+          if (run.members && run.members.length > 0) {
+            for (const m of run.members) {
+              allMembers.push({ member: m, run_guid: run.run_guid });
+            }
+          }
+        }
+      }
+    }
+    // Now write deduplicated runs and members to CSVs and import as before
+    for (const filename of files) {
+      // Filter allRuns for this file
+      const runsForFile = allRuns.filter(obj => obj.filename === filename).map(obj => obj.run);
+      const filePath = path.join(outputDir, filename);
+      const runsCsvPath = path.join(os.tmpdir(), `runs-${filename}.csv`);
+      const membersCsvPath = path.join(os.tmpdir(), `members-${filename}.csv`);
+      const runsCsv = fs.createWriteStream(runsCsvPath);
+      const membersCsv = fs.createWriteStream(membersCsvPath);
+      let runRows = 0;
+      let memberRows = 0;
+      for (const run of runsForFile) {
+        runsCsv.write([
+          run.region,
+          run.season_id,
+          run.period_id,
+          run.dungeon_id,
+          run.realm_id,
+          run.completed_at,
+          run.duration_ms,
+          run.keystone_level,
+          run.score,
+          run.rank,
+          run.run_guid
+        ].map(x => x === undefined ? '' : x).join(',') + '\n');
+        runRows++;
+        if (run.members && run.members.length > 0) {
+          for (const m of run.members) {
+            membersCsv.write([
+              m.character_name,
+              m.class_id,
+              m.spec_id,
+              m.role,
+              run.run_guid
+            ].map(x => x === undefined ? '' : x).join(',') + '\n');
+            memberRows++;
+          }
+        }
+      }
+      runsCsv.end();
+      membersCsv.end();
+      await Promise.all([
+        new Promise(resolve => runsCsv.on('finish', resolve)),
+        new Promise(resolve => membersCsv.on('finish', resolve))
+      ]);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await new Promise((resolve, reject) => {
+          const stream = client.query(copyFrom(`COPY leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid) FROM STDIN WITH (FORMAT csv)`));
+          const fileStream = fs.createReadStream(runsCsvPath);
+          pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+        });
+        // COPY to staging table instead of run_group_member
+        await new Promise((resolve, reject) => {
+          const stream = client.query(copyFrom(`COPY run_group_member_staging (character_name, class_id, spec_id, role, run_guid) FROM STDIN WITH (FORMAT csv)`));
+          const fileStream = fs.createReadStream(membersCsvPath);
+          pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+        });
+        // Upsert from staging to real table
+        await client.query(`
+          INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
+          SELECT DISTINCT ON (run_guid, character_name) run_guid, character_name, class_id, spec_id, role
+          FROM run_group_member_staging
+          ON CONFLICT (run_guid, character_name) DO UPDATE SET
+            class_id = EXCLUDED.class_id,
+            spec_id = EXCLUDED.spec_id,
+            role = EXCLUDED.role;
+        `);
+        // Truncate staging table
+        await client.query('TRUNCATE run_group_member_staging;');
+        await client.query('COMMIT');
+        //console.log(`[COPY IMPORT] File complete: ${filename} (runs: ${runRows}, members: ${memberRows})`);
+        results.push({ filename, runs: runRows, members: memberRows });
+        totalRuns += runRows;
+        totalMembers += memberRows;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`[COPY IMPORT ERROR] File: ${filename} error: ${err.message}`);
+        results.push({ filename, error: err.message });
+      } finally {
+        client.release();
+        fs.unlinkSync(runsCsvPath);
+        fs.unlinkSync(membersCsvPath);
+        completed++;
+        const percent = Math.min((completed / files.length) * 100, 100).toFixed(1);
+        const barLength = 20;
+        const filled = Math.min(Math.round((completed / files.length) * barLength), barLength);
+        const empty = Math.max(barLength - filled, 0);
+        const bar = '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
+        console.log(`[COPY IMPORT] Progress: ${bar} ${completed}/${files.length} files (${percent}%)`);
+      }
+    }
+    console.log(`[COPY IMPORT] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
+    res.json({ status: 'OK', totalRuns, totalMembers, results });
+  } catch (error) {
+    console.error('[COPY IMPORT ERROR]', error);
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
