@@ -114,7 +114,7 @@ SELECT
     WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
-WHERE r.rn <= 100;
+WHERE r.rn <= 1000;
 
 -- Index for fast filtering and ordering on the materialized view
 CREATE INDEX IF NOT EXISTS idx_top_keys_season_period_dungeon_score
@@ -147,7 +147,7 @@ SELECT
     WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
-WHERE r.rn <= 100;
+WHERE r.rn <= 1000;
 
 -- Index for fast filtering and ordering on the global materialized view
 CREATE INDEX IF NOT EXISTS idx_top_keys_global_season
@@ -180,7 +180,7 @@ SELECT
     WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
-WHERE r.rn <= 100;
+WHERE r.rn <= 1000;
 
 -- Index for fast filtering and ordering on the per-period materialized view
 CREATE INDEX IF NOT EXISTS idx_top_keys_per_period
@@ -213,7 +213,7 @@ SELECT
     WHERE rgm.run_guid = r.run_guid
   ) AS members
 FROM ranked_runs r
-WHERE r.rn <= 100;
+WHERE r.rn <= 1000;
 
 -- Index for fast filtering and ordering on the per-dungeon materialized view
 CREATE INDEX IF NOT EXISTS idx_top_keys_per_dungeon
