@@ -1,7 +1,7 @@
 const express = require('express');
 const proxyService = require('../services/proxy');
 const validateRegion = require('../middleware/region');
-const { SEASON_DUNGEONS, SEASON_NAMES, WOW_DUNGEONS } = require('../config/constants');
+const { SEASON_DUNGEONS, SEASON_NAMES, WOW_DUNGEONS, WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
 const fs = require('fs');
 const path = require('path');
 const pLimit = require('p-limit');
@@ -13,6 +13,17 @@ const router = express.Router();
 router.use(validateRegion);
 
 // --- Helper functions ---
+// Helper to map spec_id to class_id
+function getClassIdFromSpecId(specId) {
+    const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
+    return spec ? spec.classId : null;
+}
+
+// Helper to map spec_id to role
+function getRoleFromSpecId(specId) {
+    return WOW_SPEC_ROLES[specId] || null;
+}
+
 function printProgress(current, total, context = '') {
   const percent = ((current / total) * 100).toFixed(2);
   const barLength = 20;
@@ -20,6 +31,7 @@ function printProgress(current, total, context = '') {
   const bar = '[' + '#'.repeat(filled) + '-'.repeat(barLength - filled) + ']';
   console.log(`[Progress] (${current}/${total}) ${bar} ${percent}% ${context}`);
 }
+
 function ensureOutputDir() {
   const dir = path.join(__dirname, '../output');
   if (!fs.existsSync(dir)) {
@@ -237,9 +249,9 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
                       const specId = member.specialization ? member.specialization.id : null;
                       return {
                         character_name: member.profile.name,
-                        class_id: null, // getClassIdFromSpecId(specId),
+                        class_id: getClassIdFromSpecId(specId),
                         spec_id: specId,
-                        role: null, // getRoleFromSpecId(specId),
+                        role: getRoleFromSpecId(specId),
                         run_guid
                       };
                     })
@@ -327,9 +339,9 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
                     const specId = member.specialization ? member.specialization.id : null;
                     return {
                       character_name: member.profile.name,
-                      class_id: null, // getClassIdFromSpecId(specId),
+                      class_id: getClassIdFromSpecId(specId),
                       spec_id: specId,
-                      role: null, // getRoleFromSpecId(specId),
+                      role: getRoleFromSpecId(specId),
                       run_guid
                     };
                   })
