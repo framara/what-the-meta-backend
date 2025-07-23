@@ -68,6 +68,22 @@ This project provides a proxy for the Blizzard World of Warcraft Game Data API, 
 
 ---
 
+## PostgreSQL Docker Setup
+
+- **Create a persistent data directory for PostgreSQL container**
+  - Example: `mkdir -p ./pgdata`
+- **Run the PostgreSQL Docker container**
+  - Use the official image: `postgres:16`
+  - Example command:
+    ```sh
+    docker run --name wow-postgres \
+      -e POSTGRES_PASSWORD=yourpassword \
+      -e POSTGRES_USER=wowuser \
+      -e POSTGRES_DB=wow_leaderboard \
+      -p 5432:5432 \
+      -v $(pwd)/pgdata:/var/lib/postgresql/data \
+      -d postgres:16
+
 ## Environment Variables
 
 Set these in your `.env` file:
