@@ -43,13 +43,113 @@ All Blizzard WoW Game Data endpoints are proxied as-is. Example:
 
 ### Advanced Aggregation Endpoints
 
+#### GET /wow/advanced/mythic-leaderboard/index
+Returns all mythic leaderboard indexes for all connected realms.
+
+**Example Request:**
+/wow/advanced/mythic-leaderboard/index?region=us
+
+**Response:**
+```
+{
+  "connectedRealmCount": 10,
+  "results": [ ... ]
+}
+```
+
+#### GET /wow/advanced/mythic-leaderboard/:dungeonId/period/:period
+Returns leaderboard data for a specific dungeon and period across all connected realms.
+
+**Example Request:**
+/wow/advanced/mythic-leaderboard/504/period/1018?region=us
+
+**Response:**
+```
+{
+  "connectedRealmCount": 10,
+  "results": [ ... ]
+}
+```
+
+#### GET /wow/advanced/mythic-keystone-season/:seasonId/dungeons
+Returns all dungeon IDs for a given season.
+
+**Example Request:**
+/wow/advanced/mythic-keystone-season/14/dungeons?region=us
+
+**Response:**
+```
+{
+  "seasonId": 14,
+  "dungeons": [504, 505, ...],
+  "cached": true
+}
+```
+
+#### GET /wow/advanced/mythic-keystone-season/:seasonId/name
+Returns the name of a given season.
+
+**Example Request:**
+/wow/advanced/mythic-keystone-season/14/name
+
+**Response:**
+```
+{
+  "seasonId": 14,
+  "name": "Dragonflight Season 4"
+}
+```
+
 #### GET /wow/advanced/mythic-leaderboard/:seasonId/
-Aggregates all runs for all dungeons, periods, and realms for a season. Writes results to JSON files in `./output`.
+Aggregates and writes leaderboard data for all dungeons and periods in a season. Writes results to JSON files in `./output`.
+
+**Example Request:**
+/wow/advanced/mythic-leaderboard/14/
 
 #### GET /wow/advanced/mythic-leaderboard/:seasonId/:periodId
-Aggregates all runs for all dungeons and realms for a specific period. Writes results to JSON files in `./output`.
+Aggregates and writes leaderboard data for all dungeons in a season and period. Writes results to JSON files in `./output`.
 
-- These endpoints are for ETL/data collection. They do not return the full data in the HTTP response.
+**Example Request:**
+/wow/advanced/mythic-leaderboard/14/1018
+
+---
+
+### Filter Population Endpoints
+
+#### GET /wow/advanced/seasons
+Returns all available season IDs and names.
+
+**Example Request:**
+/wow/advanced/seasons
+
+**Response:**
+```
+[
+  { "season_id": 14, "season_name": "Dragonflight Season 4" },
+  ...
+]
+```
+
+#### GET /wow/advanced/season-info/:seasonId
+Returns all periods (with names) and dungeons (with names) for a given season.
+
+**Example Request:**
+/wow/advanced/season-info/14
+
+**Response:**
+```
+{
+  "periods": [
+    { "period_id": 1001, "period_name": "Week 1" },
+    { "period_id": 1002, "period_name": "Week 2" },
+    ...
+  ],
+  "dungeons": [
+    { "dungeon_id": 504, "dungeon_name": "Dawn of the Infinite: Galakrond's Fall" },
+    ...
+  ]
+}
+```
 
 ---
 

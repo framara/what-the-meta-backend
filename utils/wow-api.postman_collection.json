@@ -54,7 +54,13 @@
       "name": "Advanced",
       "item": [
         { "name": "Mythic Leaderboard (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{seasonId}}?region={{region}}" } },
-        { "name": "Mythic Leaderboard (Season/Period)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{seasonId}}/{{periodId}}?region={{region}}" } }
+        { "name": "Mythic Leaderboard (Season/Period)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{seasonId}}/{{periodId}}?region={{region}}" } },
+        { "name": "Mythic Leaderboard Index", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/index?region={{region}}" } },
+        { "name": "Mythic Leaderboard (Dungeon/Period)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard/{{dungeonId}}/period/{{periodId}}?region={{region}}" } },
+        { "name": "Mythic Keystone Season Dungeons", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/dungeons?region={{region}}" } },
+        { "name": "Mythic Keystone Season Name", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/name?region={{region}}" } },
+        { "name": "Seasons (All)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/seasons" } },
+        { "name": "Season Info", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/season-info/{{seasonId}}" } }
       ]
     },
     {
