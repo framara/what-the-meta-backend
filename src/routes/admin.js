@@ -313,7 +313,8 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     if (files.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
     }
-    let totalInserted = 0;
+    let totalRuns = 0;
+    let totalMembers = 0;
     let results = [];
     const limit = pLimit(8); // Limit to 4 files in parallel
     let completed = 0;
@@ -327,49 +328,74 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
       let inserted = 0;
       try {
         await client.query('BEGIN');
-        // 1. Insert all runs, collect runIds and members
-        let runIdToMembers = [];
+        // 1. Insert all runs, collect runGuids for successful inserts
+        let runGuids = runs.map(run => run.run_guid);
+        const runValues = [];
+        const runPlaceholders = [];
+        let runIdx = 1;
         for (const run of runs) {
-          const runGuid = run.run_guid;
-          const runInsert = await client.query(
-            `INSERT INTO leaderboard_run
-              (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-             ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
-             DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id
-             RETURNING id`,
-            [run.region, run.season_id, run.period_id, run.dungeon_id, run.realm_id, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank, runGuid]
+          runPlaceholders.push(`($${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++})`);
+          runValues.push(
+            run.region,
+            run.season_id,
+            run.period_id,
+            run.dungeon_id,
+            run.realm_id,
+            run.completed_at,
+            run.duration_ms,
+            run.keystone_level,
+            run.score,
+            run.rank,
+            run.run_guid
           );
-          const runId = runInsert.rows[0].id;
-          if (run.members && run.members.length > 0) {
-            runIdToMembers.push({ runId, members: run.members });
-          }
-          inserted++;
         }
-        // 2. Batch insert all run_group_member records
+        if (runValues.length > 0) {
+          await client.query(
+            `INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+             VALUES ${runPlaceholders.join(',')}
+             ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+             DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id;`,
+            runValues
+          );
+        }
+        // 2. Query for present run_guids
+        const { rows } = await client.query(
+          'SELECT run_guid FROM leaderboard_run WHERE run_guid = ANY($1)',
+          [runGuids]
+        );
+        const presentRunGuids = new Set(rows.map(r => r.run_guid));
+        // 3. Batch insert all run_group_member records for present run_guids
         let allMembers = [];
-        for (const { runId, members } of runIdToMembers) {
-          for (const m of members) {
-            const memberRunGuid = run.run_guid;
-            allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role, memberRunGuid]);
+        for (const run of runs) {
+          if (run.members && run.members.length > 0 && presentRunGuids.has(run.run_guid)) {
+            for (const m of run.members) {
+              allMembers.push([run.run_guid, m.character_name, m.class_id, m.spec_id, m.role]);
+            }
           }
         }
         const batchSize = 500;
         for (let i = 0; i < allMembers.length; i += batchSize) {
           let batch = allMembers.slice(i, i + batchSize);
-          batch = dedupeRunGroupMembers(batch);
+          // Deduplicate using run_guid, character_name
+          const seen = new Set();
+          batch = batch.filter(row => {
+            const key = `${row[0]}|${row[1]}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
           if (batch.length === 0) continue;
           const values = [];
           const placeholders = [];
           let idx = 1;
           for (const row of batch) {
-            placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+            placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
             values.push(...row);
           }
           await client.query(
-            `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role, run_guid)
+            `INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
              VALUES ${placeholders.join(',')}
-             ON CONFLICT (run_id, character_name) DO UPDATE SET
+             ON CONFLICT (run_guid, character_name) DO UPDATE SET
                class_id = EXCLUDED.class_id,
                spec_id = EXCLUDED.spec_id,
                role = EXCLUDED.role;`,
@@ -378,7 +404,7 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         }
         await client.query('COMMIT');
         //console.log(`[IMPORT ALL] Import complete for file: ${filename}`);
-        return { filename, inserted };
+        return { filename, runs: runs.length, members: allMembers.length };
       } catch (err) {
         await client.query('ROLLBACK');
         console.error(`[IMPORT ALL ERROR] File: ${filename}`, err);
@@ -391,8 +417,9 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     }));
     const settled = await Promise.allSettled(fileTasks);
     for (const result of settled) {
-      if (result.status === 'fulfilled' && result.value && result.value.inserted) {
-        totalInserted += result.value.inserted;
+      if (result.status === 'fulfilled' && result.value && (result.value.runs || result.value.members)) {
+        totalRuns += result.value.runs || 0;
+        totalMembers += result.value.members || 0;
         results.push(result.value);
       } else if (result.status === 'fulfilled') {
         results.push(result.value);
@@ -400,7 +427,7 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         results.push({ error: result.reason && result.reason.message });
       }
     }
-    res.json({ status: 'OK', totalInserted, results });
+    res.json({ status: 'OK', totalRuns, totalMembers, results });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }

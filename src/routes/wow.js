@@ -1289,7 +1289,17 @@ router.get('/advanced/mythic-leaderboard/:seasonId/', async (req, res, next) => 
       }
     }
     await Promise.allSettled(tasks);
-    res.json({ status: 'OK', message: 'Data written to JSON files' });
+    const results = await Promise.allSettled(tasks);
+    const failed = results.filter(r => r.status === 'rejected');
+    const succeeded = results.filter(r => r.status === 'fulfilled');
+    res.json({
+      status: failed.length === 0 ? 'OK' : 'PARTIAL',
+      message: 'Data written to JSON files',
+      filesWritten: succeeded.length,
+      filesExpected: totalFiles,
+      failedCount: failed.length,
+      failedReasons: failed.map(f => f.reason ? f.reason.message : f)
+    });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
@@ -1370,7 +1380,17 @@ router.get('/advanced/mythic-leaderboard/:seasonId/:periodId', async (req, res, 
       }
     }
     await Promise.allSettled(tasks);
-    res.json({ status: 'OK', message: 'Data written to JSON files' });
+    const results = await Promise.allSettled(tasks);
+    const failed = results.filter(r => r.status === 'rejected');
+    const succeeded = results.filter(r => r.status === 'fulfilled');
+    res.json({
+      status: failed.length === 0 ? 'OK' : 'PARTIAL',
+      message: 'Data written to JSON files',
+      filesWritten: succeeded.length,
+      filesExpected: totalFiles,
+      failedCount: failed.length,
+      failedReasons: failed.map(f => f.reason ? f.reason.message : f)
+    });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
