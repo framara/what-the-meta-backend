@@ -580,6 +580,30 @@ router.post('/import-leaderboard-copy', async (req, res) => {
   }
 });
 
+// --- Clear output directory endpoint ---
+router.post('/clear-output', async (req, res) => {
+  const outputDir = path.join(__dirname, '../output');
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ status: 'NOT OK', error: 'Not allowed in production' });
+  }
+  if (!fs.existsSync(outputDir)) {
+    return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
+  }
+  const files = fs.readdirSync(outputDir);
+  let deleted = [];
+  let errors = [];
+  for (const file of files) {
+    const filePath = path.join(outputDir, file);
+    try {
+      fs.unlinkSync(filePath);
+      deleted.push(file);
+    } catch (err) {
+      errors.push({ file, error: err.message });
+    }
+  }
+  res.json({ status: 'OK', deleted, errors });
+});
+
 module.exports = router;
 module.exports.populateDungeons = populateDungeons;
 module.exports.populateSeasons = populateSeasons;

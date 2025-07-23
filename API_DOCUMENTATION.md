@@ -115,6 +115,18 @@ Import a single JSON file from `./output` into the database.
 Import all JSON files in `./output` into the database (batched, parallelized, progress bar in logs).
 - **Returns:** Import summary
 
+#### POST /admin/clear-output
+Deletes all files in the `./output` directory. **Not allowed in production.**
+- **Returns:** List of deleted files and any errors.
+- **Example Response:**
+```json
+{
+  "status": "OK",
+  "deleted": ["file1.json", "file2.json"],
+  "errors": []
+}
+```
+
 ---
 
 ## Import/ETL Workflow
