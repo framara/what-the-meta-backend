@@ -69,7 +69,8 @@
         { "name": "Top Keys (Global)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&limit=100" } },
         { "name": "Top Keys (Period)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&limit=100" } },
         { "name": "Top Keys (Dungeon)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&dungeon_id={{dungeonId}}&limit=100" } },
-        { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } }
+        { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } },
+        { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } }
       ]
     },
     {

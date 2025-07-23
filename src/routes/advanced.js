@@ -28,6 +28,24 @@ function ensureOutputDir() {
   return dir;
 }
 
+// Helper: retry with exponential backoff on 429
+async function fetchWithRetry(fn, maxRetries = 5, delayMs = 1000) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e.response && e.response.status === 429) {
+        await new Promise(res => setTimeout(res, delayMs * Math.pow(2, attempt)));
+        attempt++;
+      } else {
+        throw e;
+      }
+    }
+  }
+  throw new Error('Max retries reached for rate-limited request');
+}
+
 // --- /advanced/ endpoints ---
 
 // /advanced/mythic-leaderboard/index
@@ -284,7 +302,9 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
       for (const connectedRealmId of connectedRealmIds) {
         tasks.push(limit(async () => {
           try {
-            const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
+            const lb = await fetchWithRetry(
+              () => proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId })
+            );
             if (lb.data && Array.isArray(lb.data.leading_groups)) {
               const runs = [];
               for (const group of lb.data.leading_groups) {

@@ -47,4 +47,43 @@ router.get('/top-keys', async (req, res) => {
   }
 });
 
+// GET /meta/evolution/:season_id
+router.get('/spec-evolution/:season_id', async (req, res) => {
+  const season_id = Number(req.params.season_id);
+  if (!season_id) {
+    return res.status(400).json({ error: 'season_id is required' });
+  }
+  try {
+    // Get all periods for the season
+    const periodsResult = await db.pool.query(
+      'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
+      [season_id]
+    );
+    const periods = periodsResult.rows;
+    // For each period, get top keys and aggregate spec popularity
+    const evolution = [];
+    for (const period of periods) {
+      const keysResult = await db.pool.query(
+        'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
+        [season_id, period.id]
+      );
+      // Aggregate spec counts for this period
+      const specCounts = {};
+      for (const row of keysResult.rows) {
+        for (const m of row.members || []) {
+          specCounts[m.spec_id] = (specCounts[m.spec_id] || 0) + 1;
+        }
+      }
+      evolution.push({
+        period_id: period.id,
+        spec_counts: specCounts
+      });
+    }
+    res.json({ season_id, evolution });
+  } catch (err) {
+    console.error('[EVOLUTION ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router; 
