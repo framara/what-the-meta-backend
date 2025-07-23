@@ -69,11 +69,13 @@ Returns top N leaderboard runs, with group composition, for meta analysis.
 - If only `season_id` is provided: returns top N globally for the season
 - If `season_id` and `period_id` are provided: returns top N for that season/period
 - If `dungeon_id` is provided: returns top N for that group (season/period/dungeon)
+- **If `season_id` and `dungeon_id` are provided (but not `period_id`): returns top N for that dungeon across all periods in the season**
 
 **Example Requests:**
 - `/meta/top-keys?season_id=14` (top N globally for season 14)
 - `/meta/top-keys?season_id=14&period_id=1001` (top N for period 1001, season 14)
 - `/meta/top-keys?season_id=14&period_id=1001&dungeon_id=247` (top N for dungeon 247, period 1001, season 14)
+- `/meta/top-keys?season_id=14&dungeon_id=247` (top N for dungeon 247, all periods, season 14)
 - `/meta/top-keys?season_id=14&limit=50&offset=100` (pagination)
 
 **Example Response:**
@@ -128,6 +130,7 @@ Import all JSON files in `./output` into the database (batched, parallelized, pr
    REFRESH MATERIALIZED VIEW top_keys_per_group;
    REFRESH MATERIALIZED VIEW top_keys_global;
    REFRESH MATERIALIZED VIEW top_keys_per_period;
+   REFRESH MATERIALIZED VIEW top_keys_per_dungeon;
    ```
 
 ---
@@ -136,7 +139,7 @@ Import all JSON files in `./output` into the database (batched, parallelized, pr
 
 - See `db/db_structure.sql` for full schema.
 - Main tables: `leaderboard_run`, `run_group_member`, `dungeon`, `period`, `realm`, `season`
-- Materialized views: `top_keys_per_group`, `top_keys_global`, `top_keys_per_period`
+- Materialized views: `top_keys_per_group`, `top_keys_global`, `top_keys_per_period`, `top_keys_per_dungeon`
 - Indexes for fast filtering and sorting
 
 ---

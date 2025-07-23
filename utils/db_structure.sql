@@ -189,6 +189,39 @@ CREATE INDEX IF NOT EXISTS idx_top_keys_per_period
 -- NOTE: Refresh this view after importing new leaderboard data:
 -- REFRESH MATERIALIZED VIEW top_keys_per_period;
 
+-- Materialized view for top keys per (season_id, dungeon_id) (all periods combined)
+CREATE MATERIALIZED VIEW IF NOT EXISTS top_keys_per_dungeon AS
+WITH ranked_runs AS (
+  SELECT
+    lr.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY lr.season_id, lr.dungeon_id
+      ORDER BY lr.keystone_level DESC, lr.score DESC
+    ) AS rn
+  FROM leaderboard_run lr
+)
+SELECT
+  r.*,
+  (
+    SELECT json_agg(json_build_object(
+      'character_name', rgm.character_name,
+      'class_id', rgm.class_id,
+      'spec_id', rgm.spec_id,
+      'role', rgm.role
+    ) ORDER BY rgm.character_name)
+    FROM run_group_member rgm
+    WHERE rgm.run_guid = r.run_guid
+  ) AS members
+FROM ranked_runs r
+WHERE r.rn <= 100;
+
+-- Index for fast filtering and ordering on the per-dungeon materialized view
+CREATE INDEX IF NOT EXISTS idx_top_keys_per_dungeon
+  ON top_keys_per_dungeon(season_id, dungeon_id, keystone_level DESC, score DESC);
+
+-- NOTE: Refresh this view after importing new leaderboard data:
+-- REFRESH MATERIALIZED VIEW top_keys_per_dungeon;
+
 -- Staging table for bulk import of run_group_member
 CREATE TABLE IF NOT EXISTS public.run_group_member_staging (
     run_guid uuid,
@@ -197,4 +230,3 @@ CREATE TABLE IF NOT EXISTS public.run_group_member_staging (
     spec_id integer,
     role character varying(16)
 );
-

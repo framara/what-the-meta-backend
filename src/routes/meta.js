@@ -24,6 +24,10 @@ router.get('/top-keys', async (req, res) => {
     // Use per-period view
     params = [season_id, period_id, limit, offset];
     sql = `SELECT * FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
+  } else if (dungeon_id && !period_id) {
+    // Use per-dungeon view
+    params = [season_id, dungeon_id, limit, offset];
+    sql = `SELECT * FROM top_keys_per_dungeon WHERE season_id = $1 AND dungeon_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
   } else {
     // Use per-group view
     let where = ['season_id = $1'];

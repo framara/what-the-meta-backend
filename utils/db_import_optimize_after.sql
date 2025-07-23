@@ -26,3 +26,4 @@ CREATE INDEX IF NOT EXISTS idx_top_keys_per_period ON top_keys_per_period(season
 REFRESH MATERIALIZED VIEW top_keys_per_group;
 REFRESH MATERIALIZED VIEW top_keys_global;
 REFRESH MATERIALIZED VIEW top_keys_per_period; 
+REFRESH MATERIALIZED VIEW top_keys_per_dungeon;
