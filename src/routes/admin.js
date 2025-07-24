@@ -604,6 +604,19 @@ router.post('/clear-output', async (req, res) => {
   res.json({ status: 'OK', deleted, errors });
 });
 
+// --- Refresh materialized views endpoint ---
+router.post('/refresh-views', async (req, res) => {
+  try {
+    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_group;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_global;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_period;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_dungeon;');
+    res.json({ status: 'OK', message: 'All materialized views refreshed.' });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
 module.exports = router;
 module.exports.populateDungeons = populateDungeons;
 module.exports.populateSeasons = populateSeasons;

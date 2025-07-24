@@ -79,7 +79,8 @@
         { "name": "Import Leaderboard JSON", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"filename\": \"{{filename}}\"\n}" }, "url": "{{baseUrl}}/admin/import-leaderboard-json" } },
         { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } },
         { "name": "Import Leaderboard Copy", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-leaderboard-copy" } },
-        { "name": "Clear Output Directory", "request": { "method": "POST", "url": "{{baseUrl}}/admin/clear-output", "description": "Deletes all files in the ./output directory (not allowed in production)." } }
+        { "name": "Clear Output Directory", "request": { "method": "POST", "url": "{{baseUrl}}/admin/clear-output", "description": "Deletes all files in the ./output directory (not allowed in production)." } },
+        { "name": "Refresh Materialized Views", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "url": "{{baseUrl}}/admin/refresh-views" } }
       ]
     }
   ]

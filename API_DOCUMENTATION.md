@@ -227,6 +227,18 @@ Deletes all files in the `./output` directory. **Not allowed in production.**
 }
 ```
 
+#### POST /admin/refresh-views
+Refreshes all materialized views used for meta/leaderboard queries.
+- **Purpose:** Ensures the latest imported data is reflected in all meta/leaderboard endpoints.
+- **Returns:** Status and message.
+- **Example Response:**
+```json
+{
+  "status": "OK",
+  "message": "All materialized views refreshed."
+}
+```
+
 ---
 
 ## Import/ETL Workflow
