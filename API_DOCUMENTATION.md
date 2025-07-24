@@ -239,6 +239,33 @@ Refreshes all materialized views used for meta/leaderboard queries.
 }
 ```
 
+#### POST /admin/cleanup-leaderboard
+Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id) from the leaderboard_run table. Optionally, you can provide a season_id in the request body to limit the cleanup to a specific season.
+
+- **Body:** `{ "season_id": 14 }` (optional)
+- **Returns:** Number of rows deleted
+
+**Example Request:**
+```
+POST /admin/cleanup-leaderboard
+Content-Type: application/json
+
+{
+  "season_id": 14
+}
+```
+
+**Example Response:**
+```json
+{
+  "status": "OK",
+  "rows_deleted": 12345
+}
+```
+
+- If no season_id is provided, the cleanup is performed for all seasons.
+- Use this endpoint after importing runs to keep only the top 1000 per group for meta analysis and storage efficiency.
+
 ---
 
 ## Import/ETL Workflow

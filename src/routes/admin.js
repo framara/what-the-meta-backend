@@ -580,6 +580,35 @@ router.post('/import-leaderboard-copy', async (req, res) => {
   }
 });
 
+// Cleanup endpoint: keep only top 1000 runs per (dungeon_id, period_id, season_id)
+router.post('/cleanup-leaderboard', async (req, res) => {
+  const { season_id } = req.body || {};
+  let sql = `
+    DELETE FROM leaderboard_run
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (
+            PARTITION BY season_id, period_id, dungeon_id
+            ORDER BY keystone_level DESC, score DESC
+          ) AS rn
+        FROM leaderboard_run
+        ${season_id ? 'WHERE season_id = $1' : ''}
+      ) sub
+      WHERE rn > 1000
+    );
+  `;
+  try {
+    const result = season_id
+      ? await db.pool.query(sql, [season_id])
+      : await db.pool.query(sql);
+    res.json({ status: 'OK', rows_deleted: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ status: 'ERROR', error: err.message });
+  }
+});
+
 // --- Clear output directory endpoint ---
 router.post('/clear-output', async (req, res) => {
   const outputDir = path.join(__dirname, '../output');
