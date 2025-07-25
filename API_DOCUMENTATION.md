@@ -4,10 +4,6 @@
 
 This API proxy provides a unified interface for Blizzard's World of Warcraft Game Data API, advanced leaderboard aggregation, and a robust import/ETL pipeline for meta analysis. It abstracts OAuth, regional routing, and data aggregation for both consumers and admin users.
 
-## Base URL
-```
-http://localhost:3000
-```
 
 ## Regional Support
 All endpoints support the following regions via the `region` query parameter:
