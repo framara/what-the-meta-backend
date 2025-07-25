@@ -7,6 +7,7 @@ const pool = new Pool({
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
   max: 10, // Limit pool size
+  ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 
 // Upsert leaderboard_run (no group_id)
@@ -73,4 +74,4 @@ module.exports = {
   pool,
   upsertLeaderboardRun,
   insertRunGroupMembers,
-}; 
+};
