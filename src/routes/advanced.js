@@ -412,7 +412,7 @@ router.get('/season-info/:seasonId', async (req, res, next) => {
     const dungeons = seasonDungeonIds
       .map(id => {
         const found = WOW_DUNGEONS.find(d => d.id === id);
-        return found ? { dungeon_id: found.id, dungeon_name: found.name } : null;
+        return found ? { dungeon_id: found.id, dungeon_name: found.name, dungeon_shortname: found.shortname } : null;
       })
       .filter(Boolean);
     res.json({ periods, dungeons });
