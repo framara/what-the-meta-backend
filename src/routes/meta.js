@@ -10,7 +10,7 @@ const router = express.Router();
 // Supports: season_id (required), period_id (optional), dungeon_id (optional), limit (default 100, max 500), offset (default 0)
 router.get('/top-keys', async (req, res) => {
   const { season_id, period_id, dungeon_id } = req.query;
-  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const limit = Math.min(Number(req.query.limit) || 100, 1000);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   if (!season_id) {
     return res.status(400).json({ error: 'season_id is required' });
