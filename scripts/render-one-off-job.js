@@ -49,33 +49,27 @@ async function getLatestSeasonAndPeriod() {
     // Get seasons to find the latest one
     const seasonsResponse = await makeRequest('GET', '/wow/advanced/seasons');
     const seasons = seasonsResponse || [];
-    
     if (!seasons || seasons.length === 0) {
       throw new Error('No seasons found');
     }
-    
     // Find the latest season (highest season_id)
-    const latestSeason = seasons.reduce((latest, current) => 
+    const latestSeason = seasons.reduce((latest, current) =>
       current.season_id > latest.season_id ? current : latest
     );
-    
     console.log(`[ONE-OFF] Latest season found: ${latestSeason.season_id} (${latestSeason.season_name})`);
-    
-    // Get periods for the latest season
-    const periodsResponse = await makeRequest('GET', `/wow/advanced/periods/${latestSeason.season_id}`);
-    const periods = periodsResponse || [];
-    
+
+    // Get season info to find periods for this season
+    const seasonInfo = await makeRequest('GET', `/wow/advanced/season-info/${latestSeason.season_id}`);
+    const periods = seasonInfo.periods || [];
     if (!periods || periods.length === 0) {
       throw new Error(`No periods found for season ${latestSeason.season_id}`);
     }
-    
     // Find the latest period (highest period_id)
-    const latestPeriod = periods.reduce((latest, current) => 
+    const latestPeriod = periods.reduce((latest, current) =>
       current.period_id > latest.period_id ? current : latest
     );
-    
-    console.log(`[ONE-OFF] Latest period found: ${latestPeriod.period_id} (${latestPeriod.period_name})`);
-    
+    console.log(`[ONE-OFF] Latest period found: ${latestPeriod.period_id}`);
+
     return {
       seasonId: latestSeason.season_id,
       periodId: latestPeriod.period_id
