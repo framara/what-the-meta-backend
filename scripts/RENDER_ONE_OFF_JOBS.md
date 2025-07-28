@@ -268,6 +268,57 @@ node scripts/render-one-off-job.js --fetch-only
 node scripts/render-one-off-job.js --cleanup-only
 ```
 
+## Automation Steps
+
+The one-off job performs the following steps in order:
+
+### Step 1: Fetch Leaderboard Data
+- **Purpose:** Retrieves the latest mythic leaderboard data from Blizzard API
+- **Action:** Calls `/wow/advanced/mythic-leaderboard/{seasonId}/{periodId}?region={region}` for all 4 regions (us, eu, kr, tw)
+- **Output:** JSON files saved to `./output` directory
+- **Duration:** 5-15 minutes depending on data size
+
+### Step 2: Import Leaderboard Data
+- **Purpose:** Imports all JSON files from `./output` into the PostgreSQL database
+- **Action:** Calls `POST /admin/import-all-leaderboard-json`
+- **Output:** Data stored in `leaderboard_run` and `group_member` tables
+- **Duration:** 10-30 minutes depending on data volume
+
+### Step 3: Clear Output Directory
+- **Purpose:** Removes temporary JSON files to free up disk space
+- **Action:** Calls `POST /admin/clear-output`
+- **Output:** `./output` directory cleaned
+- **Duration:** 1-2 minutes
+
+### Step 4: Cleanup Leaderboard Data
+- **Purpose:** Removes duplicate and old data, keeping only top 1000 runs per dungeon/period/season
+- **Action:** Calls `POST /admin/cleanup-leaderboard` with season_id
+- **Output:** Database optimized for performance
+- **Duration:** 5-15 minutes
+
+### Step 5: Perform VACUUM FULL
+- **Purpose:** Reclaims storage space and defragments database tables
+- **Action:** Calls `POST /admin/vacuum-full`
+- **Output:** Database storage optimized
+- **Duration:** 10-60 minutes (depends on database size)
+
+### Step 6: Refresh Materialized Views
+- **Purpose:** Updates all materialized views with latest data
+- **Action:** Calls `POST /admin/refresh-views`
+- **Output:** Meta endpoints updated with fresh data
+- **Duration:** 5-15 minutes
+
+### Total Duration
+- **Typical:** 30-120 minutes
+- **Peak times:** May take longer due to Blizzard API rate limits
+- **Large datasets:** Can take 2-3 hours for very large imports
+
+### Error Handling
+- Each step includes retry logic with exponential backoff
+- Failed steps are logged with detailed error information
+- The job continues to the next step even if some regions fail
+- Database operations are wrapped in transactions for data integrity
+
 ## Troubleshooting
 
 ### Common Issues

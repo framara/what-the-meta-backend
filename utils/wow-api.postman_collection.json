@@ -90,7 +90,19 @@
           },
           "url": "{{baseUrl}}/admin/cleanup-leaderboard",
           "description": "Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id). Optionally filter by season_id."}
-        }
+        },
+        { "name": "Vacuum Full", "request": {
+          "method": "POST",
+          "header": [
+            { "key": "Content-Type", "value": "application/json" }
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{}"
+          },
+          "url": "{{baseUrl}}/admin/vacuum-full",
+          "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access and can take a long time."
+        }}
       ]
     },
     {
@@ -169,74 +181,74 @@
             "description": "Trigger only the cleanup step. Requires season_id in request body."
           }
         },
-                 { 
-           "name": "Refresh Views", 
-           "request": { 
-             "method": "POST", 
-             "header": [ { "key": "Content-Type", "value": "application/json" } ],
-             "body": {
-               "mode": "raw",
-               "raw": "{}"
-             },
-             "url": "{{baseUrl}}/admin/automation/refresh-views",
-             "description": "Trigger only the materialized views refresh step."
-           }
-         }
-       ]
-     },
-     {
-       "name": "Render One-Off Jobs",
-       "item": [
-         { 
-           "name": "Create One-Off Job", 
-           "request": { 
-             "method": "POST", 
-             "header": [ 
-               { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" },
-               { "key": "Content-Type", "value": "application/json" }
-             ],
-             "body": {
-               "mode": "raw",
-               "raw": "{\n  \"startCommand\": \"npm run one-off\"\n}"
-             },
-             "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
-             "description": "Create a one-off job to run the daily automation. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
-           }
-         },
-         { 
-           "name": "Get Job Status", 
-           "request": { 
-             "method": "GET", 
-             "header": [ 
-               { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
-             ],
-             "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
-             "description": "Check the status of a one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
-           }
-         },
-         { 
-           "name": "List Jobs", 
-           "request": { 
-             "method": "GET", 
-             "header": [ 
-               { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
-             ],
-             "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
-             "description": "List all one-off jobs for your service. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
-           }
-         },
-         { 
-           "name": "Cancel Running Job", 
-           "request": { 
-             "method": "DELETE", 
-             "header": [ 
-               { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
-             ],
-             "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
-             "description": "Cancel a running one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
-           }
-         }
-       ]
-     }
-   ]
- }
+        { 
+          "name": "Refresh Views", 
+          "request": { 
+            "method": "POST", 
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/refresh-views",
+            "description": "Trigger only the materialized views refresh step."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Render One-Off Jobs",
+      "item": [
+        { 
+          "name": "Create One-Off Job", 
+          "request": { 
+            "method": "POST", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startCommand\": \"npm run one-off\"\n}"
+            },
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
+            "description": "Create a one-off job to run the daily automation. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "Get Job Status", 
+          "request": { 
+            "method": "GET", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
+            "description": "Check the status of a one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "List Jobs", 
+          "request": { 
+            "method": "GET", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
+            "description": "List all one-off jobs for your service. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "Cancel Running Job", 
+          "request": { 
+            "method": "DELETE", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
+            "description": "Cancel a running one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -169,6 +169,19 @@ async function refreshViews() {
   }
 }
 
+async function vacuumFull() {
+  console.log('[ONE-OFF] Performing VACUUM FULL on database');
+  
+  try {
+    const response = await makeRequest('POST', '/admin/vacuum-full');
+    console.log('[ONE-OFF] Successfully completed VACUUM FULL');
+    return response;
+  } catch (error) {
+    console.error('[ONE-OFF ERROR] Failed to perform VACUUM FULL:', error.message);
+    throw error;
+  }
+}
+
 // Main automation function for One-Off Job
 async function runOneOffAutomation() {
   const startTime = new Date();
@@ -192,8 +205,12 @@ async function runOneOffAutomation() {
     console.log('\n=== STEP 4: Cleaning up leaderboard data ===');
     const cleanupResult = await cleanupLeaderboard(fetchResult.seasonId);
     
-    // Step 5: Refresh materialized views
-    console.log('\n=== STEP 5: Refreshing materialized views ===');
+    // Step 5: Perform VACUUM FULL on database
+    console.log('\n=== STEP 5: Performing VACUUM FULL ===');
+    const vacuumResult = await vacuumFull();
+    
+    // Step 6: Refresh materialized views
+    console.log('\n=== STEP 6: Refreshing materialized views ===');
     const refreshResult = await refreshViews();
     
     const endTime = new Date();
@@ -210,6 +227,7 @@ async function runOneOffAutomation() {
         import: importResult,
         clear: clearResult,
         cleanup: cleanupResult,
+        vacuum: vacuumResult,
         refresh: refreshResult
       }
     };
@@ -254,5 +272,6 @@ module.exports = {
   importLeaderboardData,
   clearOutput,
   cleanupLeaderboard,
+  vacuumFull,
   refreshViews
 }; 

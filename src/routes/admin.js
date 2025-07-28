@@ -639,6 +639,28 @@ router.post('/automation/refresh-views', async (req, res) => {
   }
 });
 
+// POST /admin/vacuum-full - Perform VACUUM FULL on the database
+router.post('/vacuum-full', async (req, res) => {
+  try {
+    console.log('[ADMIN] VACUUM FULL started');
+    
+    // VACUUM FULL requires exclusive access and can take a long time
+    // It's recommended to run this during low-traffic periods
+    const result = await db.pool.query('VACUUM FULL');
+    
+    console.log('[ADMIN] VACUUM FULL completed');
+    
+    res.json({
+      status: 'OK',
+      message: 'VACUUM FULL completed successfully',
+      result: result
+    });
+  } catch (error) {
+    console.error('[ADMIN ERROR] VACUUM FULL failed:', error.message);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
 module.exports = router;
 module.exports.populateDungeons = populateDungeons;
 module.exports.populateSeasons = populateSeasons;
