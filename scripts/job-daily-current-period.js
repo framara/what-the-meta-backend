@@ -17,7 +17,7 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         headers: {
           'Content-Type': 'application/json',
         },
-        timeout: 7200000, // 120 minutes
+        timeout: 7200000, // 2 hours
       };  
 
       if (data) {
