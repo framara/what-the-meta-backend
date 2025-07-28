@@ -17,8 +17,8 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         headers: {
           'Content-Type': 'application/json',
         },
-        timeout: 300000, // 5 minutes
-      };
+        timeout: 7200000, // 120 minutes
+      };  
 
       if (data) {
         config.data = data;
