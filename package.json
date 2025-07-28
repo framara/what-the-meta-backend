@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "jest",
-    "one-off": "node scripts/render-one-off-job.js"
+    "daily-job": "node scripts/job-daily-current-period.js",
+    "weekly-job": "node scripts/job-weekly-previous-period.js"
   },
   "keywords": [
     "blizzard",

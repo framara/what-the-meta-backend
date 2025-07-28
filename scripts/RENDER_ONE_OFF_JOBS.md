@@ -96,7 +96,7 @@ npm run one-off
 
 Which executes:
 ```bash
-node scripts/render-one-off-job.js
+node scripts/job-daily-current-period.js
 ```
 
 ### Environment Variables
@@ -262,10 +262,10 @@ You can create different one-off jobs for different purposes:
 npm run one-off
 
 # Just data fetching
-node scripts/render-one-off-job.js --fetch-only
+node scripts/job-daily-current-period.js --fetch-only
 
 # Just cleanup
-node scripts/render-one-off-job.js --cleanup-only
+node scripts/job-daily-current-period.js --cleanup-only
 ```
 
 ## Automation Steps
