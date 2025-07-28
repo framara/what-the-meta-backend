@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "jest"
+    "test": "jest",
+    "one-off": "node scripts/render-one-off-job.js"
   },
   "keywords": [
     "blizzard",

@@ -14,6 +14,9 @@ const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
 
+// Import the automation functions
+const automation = require('../../scripts/render-automation');
+
 // --- POPULATE FUNCTIONS ---
 async function populateDungeons() {
   const region = 'us';
@@ -497,6 +500,140 @@ router.post('/refresh-views', async (req, res) => {
     await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_period;');
     await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_dungeon;');
     res.json({ status: 'OK', message: 'All materialized views refreshed.' });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// --- Automation endpoints for Render.com ---
+
+// POST /admin/automation/trigger - Trigger the full daily automation
+router.post('/automation/trigger', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Manual trigger received');
+    
+    // Run the automation in the background
+    automation.runDailyAutomation()
+      .then(result => {
+        console.log('[AUTOMATION] Background automation completed:', result.status);
+      })
+      .catch(error => {
+        console.error('[AUTOMATION] Background automation failed:', error);
+      });
+    
+    // Return immediately to avoid timeout
+    res.json({ 
+      status: 'OK', 
+      message: 'Automation started in background',
+      note: 'Check logs for progress and completion status'
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/trigger-sync - Trigger automation synchronously (for testing)
+router.post('/automation/trigger-sync', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Synchronous trigger received');
+    
+    const result = await automation.runDailyAutomation();
+    
+    res.json({
+      status: result.status === 'success' ? 'OK' : 'NOT OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/automation/status - Check automation status
+router.get('/automation/status', async (req, res) => {
+  try {
+    // This is a simple status endpoint - in a real implementation,
+    // you might want to store automation status in a database
+    res.json({
+      status: 'OK',
+      message: 'Automation system is ready',
+      endpoints: {
+        trigger: 'POST /admin/automation/trigger - Start automation in background',
+        triggerSync: 'POST /admin/automation/trigger-sync - Start automation synchronously',
+        status: 'GET /admin/automation/status - Check this endpoint'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/fetch-data - Trigger only the data fetching step
+router.post('/automation/fetch-data', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Fetch data trigger received');
+    
+    const result = await automation.fetchLeaderboardData();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/import-data - Trigger only the import step
+router.post('/automation/import-data', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Import data trigger received');
+    
+    const result = await automation.importLeaderboardData();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/cleanup - Trigger only the cleanup step
+router.post('/automation/cleanup', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Cleanup trigger received');
+    
+    const { season_id } = req.body || {};
+    if (!season_id) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'season_id is required in request body' 
+      });
+    }
+    
+    const result = await automation.cleanupLeaderboard(season_id);
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/refresh-views - Trigger only the refresh views step
+router.post('/automation/refresh-views', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Refresh views trigger received');
+    
+    const result = await automation.refreshViews();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
