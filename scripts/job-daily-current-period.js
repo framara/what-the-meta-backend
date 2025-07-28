@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-// Configuration for Render One-Off Job
+// Configuration for Render DAILY Job
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const REGIONS = ['us', 'eu', 'kr', 'tw'];
 
@@ -24,12 +24,12 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         config.data = data;
       }
 
-      console.log(`[ONE-OFF] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
+      console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
       const response = await axios(config);
-      console.log(`[ONE-OFF] ${method} ${endpoint} - Status: ${response.status}`);
+      console.log(`[DAILY] ${method} ${endpoint} - Status: ${response.status}`);
       return response.data;
     } catch (error) {
-      console.error(`[ONE-OFF ERROR] ${method} ${endpoint} failed (attempt ${attempt}/${retries}):`, error.response?.data || error.message);
+      console.error(`[DAILY ERROR] ${method} ${endpoint} failed (attempt ${attempt}/${retries}):`, error.response?.data || error.message);
       
       if (attempt === retries) {
         throw error;
@@ -37,7 +37,7 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
       
       // Wait before retry
       const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
-      console.log(`[ONE-OFF] Retrying in ${delay}ms...`);
+      console.log(`[DAILY] Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -56,7 +56,7 @@ async function getLatestSeasonAndPeriod() {
     const latestSeason = seasons.reduce((latest, current) =>
       current.season_id > latest.season_id ? current : latest
     );
-    console.log(`[ONE-OFF] Latest season found: ${latestSeason.season_id} (${latestSeason.season_name})`);
+    console.log(`[DAILY] Latest season found: ${latestSeason.season_id} (${latestSeason.season_name})`);
 
     // Get season info to find periods for this season
     const seasonInfo = await makeRequest('GET', `/wow/advanced/season-info/${latestSeason.season_id}`);
@@ -68,14 +68,14 @@ async function getLatestSeasonAndPeriod() {
     const latestPeriod = periods.reduce((latest, current) =>
       current.period_id > latest.period_id ? current : latest
     );
-    console.log(`[ONE-OFF] Latest period found: ${latestPeriod.period_id}`);
+    console.log(`[DAILY] Latest period found: ${latestPeriod.period_id}`);
 
     return {
       seasonId: latestSeason.season_id,
       periodId: latestPeriod.period_id
     };
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to get latest season and period:', error.message);
+    console.error('[DAILY ERROR] Failed to get latest season and period:', error.message);
     throw error;
   }
 }
@@ -84,13 +84,13 @@ async function getLatestSeasonAndPeriod() {
 async function fetchLeaderboardData() {
   const { seasonId, periodId } = await getLatestSeasonAndPeriod();
   
-  console.log(`[ONE-OFF] Starting leaderboard data fetch for season ${seasonId}, period ${periodId}`);
+  console.log(`[DAILY] Starting leaderboard data fetch for season ${seasonId}, period ${periodId}`);
   
   const results = [];
   
   for (const region of REGIONS) {
     try {
-      console.log(`[ONE-OFF] Fetching data for region: ${region}`);
+      console.log(`[DAILY] Fetching data for region: ${region}`);
       const response = await makeRequest('GET', `/wow/advanced/mythic-leaderboard/${seasonId}/${periodId}?region=${region}`);
       
       results.push({
@@ -99,9 +99,9 @@ async function fetchLeaderboardData() {
         data: response
       });
       
-      console.log(`[ONE-OFF] Successfully fetched data for region ${region}`);
+      console.log(`[DAILY] Successfully fetched data for region ${region}`);
     } catch (error) {
-      console.error(`[ONE-OFF ERROR] Failed to fetch data for region ${region}:`, error.message);
+      console.error(`[DAILY ERROR] Failed to fetch data for region ${region}:`, error.message);
       results.push({
         region,
         status: 'error',
@@ -115,78 +115,78 @@ async function fetchLeaderboardData() {
 
 // Step 2: Import all leaderboard JSON files
 async function importLeaderboardData() {
-  console.log('[ONE-OFF] Starting import of leaderboard JSON files');
+  console.log('[DAILY] Starting import of leaderboard JSON files');
   
   try {
     const response = await makeRequest('POST', '/admin/import-all-leaderboard-json');
-    console.log('[ONE-OFF] Successfully imported leaderboard data');
+    console.log('[DAILY] Successfully imported leaderboard data');
     return response;
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to import leaderboard data:', error.message);
+    console.error('[DAILY ERROR] Failed to import leaderboard data:', error.message);
     throw error;
   }
 }
 
 // Step 3: Clear output directory
 async function clearOutput() {
-  console.log('[ONE-OFF] Clearing output directory');
+  console.log('[DAILY] Clearing output directory');
   
   try {
     const response = await makeRequest('POST', '/admin/clear-output');
-    console.log('[ONE-OFF] Successfully cleared output directory');
+    console.log('[DAILY] Successfully cleared output directory');
     return response;
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to clear output directory:', error.message);
+    console.error('[DAILY ERROR] Failed to clear output directory:', error.message);
     throw error;
   }
 }
 
 // Step 4: Cleanup leaderboard data
 async function cleanupLeaderboard(seasonId) {
-  console.log(`[ONE-OFF] Cleaning up leaderboard data for season ${seasonId}`);
+  console.log(`[DAILY] Cleaning up leaderboard data for season ${seasonId}`);
   
   try {
     const response = await makeRequest('POST', '/admin/cleanup-leaderboard', { season_id: seasonId });
-    console.log('[ONE-OFF] Successfully cleaned up leaderboard data');
+    console.log('[DAILY] Successfully cleaned up leaderboard data');
     return response;
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to cleanup leaderboard data:', error.message);
+    console.error('[DAILY ERROR] Failed to cleanup leaderboard data:', error.message);
     throw error;
   }
 }
 
 // Step 5: Refresh materialized views
 async function refreshViews() {
-  console.log('[ONE-OFF] Refreshing materialized views');
+  console.log('[DAILY] Refreshing materialized views');
   
   try {
     const response = await makeRequest('POST', '/admin/refresh-views');
-    console.log('[ONE-OFF] Successfully refreshed materialized views');
+    console.log('[DAILY] Successfully refreshed materialized views');
     return response;
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to refresh materialized views:', error.message);
+    console.error('[DAILY ERROR] Failed to refresh materialized views:', error.message);
     throw error;
   }
 }
 
 async function vacuumFull() {
-  console.log('[ONE-OFF] Performing VACUUM FULL on database');
+  console.log('[DAILY] Performing VACUUM FULL on database');
   
   try {
     const response = await makeRequest('POST', '/admin/vacuum-full');
-    console.log('[ONE-OFF] Successfully completed VACUUM FULL');
+    console.log('[DAILY] Successfully completed VACUUM FULL');
     return response;
   } catch (error) {
-    console.error('[ONE-OFF ERROR] Failed to perform VACUUM FULL:', error.message);
+    console.error('[DAILY ERROR] Failed to perform VACUUM FULL:', error.message);
     throw error;
   }
 }
 
-// Main automation function for One-Off Job
+// Main automation function for DAILY Job
 async function runOneOffAutomation() {
   const startTime = new Date();
-  console.log(`[ONE-OFF] Starting one-off automation at ${startTime.toISOString()}`);
-  console.log(`[ONE-OFF] API Base URL: ${API_BASE_URL}`);
+  console.log(`[DAILY] Starting DAILY automation at ${startTime.toISOString()}`);
+  console.log(`[DAILY] API Base URL: ${API_BASE_URL}`);
   
   try {
     // Step 1: Fetch leaderboard data for all regions
@@ -216,8 +216,8 @@ async function runOneOffAutomation() {
     const endTime = new Date();
     const duration = (endTime - startTime) / 1000;
     
-    console.log(`\n[ONE-OFF] One-off automation completed successfully at ${endTime.toISOString()}`);
-    console.log(`[ONE-OFF] Total duration: ${duration} seconds`);
+    console.log(`\n[DAILY] DAILY automation completed successfully at ${endTime.toISOString()}`);
+    console.log(`[DAILY] Total duration: ${duration} seconds`);
     
     return {
       status: 'success',
@@ -236,9 +236,9 @@ async function runOneOffAutomation() {
     const endTime = new Date();
     const duration = (endTime - startTime) / 1000;
     
-    console.error(`\n[ONE-OFF] One-off automation failed at ${endTime.toISOString()}`);
-    console.error(`[ONE-OFF] Total duration: ${duration} seconds`);
-    console.error(`[ONE-OFF] Error: ${error.message}`);
+    console.error(`\n[DAILY] DAILY automation failed at ${endTime.toISOString()}`);
+    console.error(`[DAILY] Total duration: ${duration} seconds`);
+    console.error(`[DAILY] Error: ${error.message}`);
     
     return {
       status: 'error',
@@ -253,15 +253,15 @@ if (require.main === module) {
   runOneOffAutomation()
     .then(result => {
       if (result.status === 'success') {
-        console.log('[ONE-OFF] Automation completed successfully');
+        console.log('[DAILY] Automation completed successfully');
         process.exit(0);
       } else {
-        console.error('[ONE-OFF] Automation failed');
+        console.error('[DAILY] Automation failed');
         process.exit(1);
       }
     })
     .catch(error => {
-      console.error('[ONE-OFF] Unexpected error:', error);
+      console.error('[DAILY] Unexpected error:', error);
       process.exit(1);
     });
 }

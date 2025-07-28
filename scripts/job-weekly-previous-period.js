@@ -2,7 +2,7 @@
 
 const axios = require('axios');
 
-// Configuration for Render One-Off Job
+// Configuration for Render WEEKLY Job
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const REGIONS = ['us', 'eu', 'kr', 'tw'];
 
@@ -24,12 +24,12 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         config.data = data;
       }
 
-      console.log(`[PREVIOUS-PERIOD] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
+      console.log(`[WEEKLY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
       const response = await axios(config);
-      console.log(`[PREVIOUS-PERIOD] ${method} ${endpoint} - Status: ${response.status}`);
+      console.log(`[WEEKLY] ${method} ${endpoint} - Status: ${response.status}`);
       return response.data;
     } catch (error) {
-      console.error(`[PREVIOUS-PERIOD ERROR] ${method} ${endpoint} failed (attempt ${attempt}/${retries}):`, error.response?.data || error.message);
+      console.error(`[WEEKLY ERROR] ${method} ${endpoint} failed (attempt ${attempt}/${retries}):`, error.response?.data || error.message);
       
       if (attempt === retries) {
         throw error;
@@ -37,7 +37,7 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
       
       // Wait before retry
       const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
-      console.log(`[PREVIOUS-PERIOD] Retrying in ${delay}ms...`);
+      console.log(`[WEEKLY] Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -56,7 +56,7 @@ async function getPreviousSeasonAndPeriod() {
     // Sort seasons by season_id in descending order
     const sortedSeasons = seasons.sort((a, b) => b.season_id - a.season_id);
     const latestSeason = sortedSeasons[0];
-    console.log(`[PREVIOUS-PERIOD] Latest season found: ${latestSeason.season_id} (${latestSeason.season_name})`);
+    console.log(`[WEEKLY] Latest season found: ${latestSeason.season_id} (${latestSeason.season_name})`);
 
     // Get season info to find periods for this season
     const seasonInfo = await makeRequest('GET', `/wow/advanced/season-info/${latestSeason.season_id}`);
@@ -77,7 +77,7 @@ async function getPreviousSeasonAndPeriod() {
       }
       
       const previousSeason = sortedSeasons[1];
-      console.log(`[PREVIOUS-PERIOD] Current season has only 1 period, using previous season: ${previousSeason.season_id} (${previousSeason.season_name})`);
+      console.log(`[WEEKLY] Current season has only 1 period, using previous season: ${previousSeason.season_id} (${previousSeason.season_name})`);
       
       const previousSeasonInfo = await makeRequest('GET', `/wow/advanced/season-info/${previousSeason.season_id}`);
       const previousSeasonPeriods = previousSeasonInfo.periods || [];
@@ -90,13 +90,13 @@ async function getPreviousSeasonAndPeriod() {
       targetSeasonId = previousSeason.season_id;
       targetPeriodId = sortedPreviousPeriods[0].period_id;
       
-      console.log(`[PREVIOUS-PERIOD] Using last period from previous season: ${targetPeriodId}`);
+      console.log(`[WEEKLY] Using last period from previous season: ${targetPeriodId}`);
     } else {
       // Current season has multiple periods, get the second to last period
       targetSeasonId = latestSeason.season_id;
       targetPeriodId = sortedPeriods[1].period_id; // Second to last period
       
-      console.log(`[PREVIOUS-PERIOD] Using previous period from current season: ${targetPeriodId}`);
+      console.log(`[WEEKLY] Using previous period from current season: ${targetPeriodId}`);
     }
 
     return {
@@ -104,7 +104,7 @@ async function getPreviousSeasonAndPeriod() {
       periodId: targetPeriodId
     };
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to get previous season and period:', error.message);
+    console.error('[WEEKLY ERROR] Failed to get previous season and period:', error.message);
     throw error;
   }
 }
@@ -113,13 +113,13 @@ async function getPreviousSeasonAndPeriod() {
 async function fetchLeaderboardData() {
   const { seasonId, periodId } = await getPreviousSeasonAndPeriod();
   
-  console.log(`[PREVIOUS-PERIOD] Starting leaderboard data fetch for season ${seasonId}, period ${periodId}`);
+  console.log(`[WEEKLY] Starting leaderboard data fetch for season ${seasonId}, period ${periodId}`);
   
   const results = [];
   
   for (const region of REGIONS) {
     try {
-      console.log(`[PREVIOUS-PERIOD] Fetching data for region: ${region}`);
+      console.log(`[WEEKLY] Fetching data for region: ${region}`);
       const response = await makeRequest('GET', `/wow/advanced/mythic-leaderboard/${seasonId}/${periodId}?region=${region}`);
       
       results.push({
@@ -128,9 +128,9 @@ async function fetchLeaderboardData() {
         data: response
       });
       
-      console.log(`[PREVIOUS-PERIOD] Successfully fetched data for region ${region}`);
+      console.log(`[WEEKLY] Successfully fetched data for region ${region}`);
     } catch (error) {
-      console.error(`[PREVIOUS-PERIOD ERROR] Failed to fetch data for region ${region}:`, error.message);
+      console.error(`[WEEKLY ERROR] Failed to fetch data for region ${region}:`, error.message);
       results.push({
         region,
         status: 'error',
@@ -144,69 +144,69 @@ async function fetchLeaderboardData() {
 
 // Step 2: Import all leaderboard JSON files
 async function importLeaderboardData() {
-  console.log('[PREVIOUS-PERIOD] Starting import of leaderboard JSON files');
+  console.log('[WEEKLY] Starting import of leaderboard JSON files');
   
   try {
     const response = await makeRequest('POST', '/admin/import-all-leaderboard-json');
-    console.log('[PREVIOUS-PERIOD] Successfully imported leaderboard data');
+    console.log('[WEEKLY] Successfully imported leaderboard data');
     return response;
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to import leaderboard data:', error.message);
+    console.error('[WEEKLY ERROR] Failed to import leaderboard data:', error.message);
     throw error;
   }
 }
 
 // Step 3: Clear output directory
 async function clearOutput() {
-  console.log('[PREVIOUS-PERIOD] Clearing output directory');
+  console.log('[WEEKLY] Clearing output directory');
   
   try {
     const response = await makeRequest('POST', '/admin/clear-output');
-    console.log('[PREVIOUS-PERIOD] Successfully cleared output directory');
+    console.log('[WEEKLY] Successfully cleared output directory');
     return response;
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to clear output directory:', error.message);
+    console.error('[WEEKLY ERROR] Failed to clear output directory:', error.message);
     throw error;
   }
 }
 
 // Step 4: Cleanup leaderboard data
 async function cleanupLeaderboard(seasonId) {
-  console.log(`[PREVIOUS-PERIOD] Cleaning up leaderboard data for season ${seasonId}`);
+  console.log(`[WEEKLY] Cleaning up leaderboard data for season ${seasonId}`);
   
   try {
     const response = await makeRequest('POST', '/admin/cleanup-leaderboard', { season_id: seasonId });
-    console.log('[PREVIOUS-PERIOD] Successfully cleaned up leaderboard data');
+    console.log('[WEEKLY] Successfully cleaned up leaderboard data');
     return response;
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to cleanup leaderboard data:', error.message);
+    console.error('[WEEKLY ERROR] Failed to cleanup leaderboard data:', error.message);
     throw error;
   }
 }
 
 // Step 5: Refresh materialized views
 async function refreshViews() {
-  console.log('[PREVIOUS-PERIOD] Refreshing materialized views');
+  console.log('[WEEKLY] Refreshing materialized views');
   
   try {
     const response = await makeRequest('POST', '/admin/refresh-views');
-    console.log('[PREVIOUS-PERIOD] Successfully refreshed materialized views');
+    console.log('[WEEKLY] Successfully refreshed materialized views');
     return response;
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to refresh materialized views:', error.message);
+    console.error('[WEEKLY ERROR] Failed to refresh materialized views:', error.message);
     throw error;
   }
 }
 
 async function vacuumFull() {
-  console.log('[PREVIOUS-PERIOD] Performing VACUUM FULL on database');
+  console.log('[WEEKLY] Performing VACUUM FULL on database');
   
   try {
     const response = await makeRequest('POST', '/admin/vacuum-full');
-    console.log('[PREVIOUS-PERIOD] Successfully completed VACUUM FULL');
+    console.log('[WEEKLY] Successfully completed VACUUM FULL');
     return response;
   } catch (error) {
-    console.error('[PREVIOUS-PERIOD ERROR] Failed to perform VACUUM FULL:', error.message);
+    console.error('[WEEKLY ERROR] Failed to perform VACUUM FULL:', error.message);
     throw error;
   }
 }
@@ -214,8 +214,8 @@ async function vacuumFull() {
 // Main automation function for Previous Period Job
 async function runPreviousPeriodAutomation() {
   const startTime = new Date();
-  console.log(`[PREVIOUS-PERIOD] Starting previous period automation at ${startTime.toISOString()}`);
-  console.log(`[PREVIOUS-PERIOD] API Base URL: ${API_BASE_URL}`);
+  console.log(`[WEEKLY] Starting previous period automation at ${startTime.toISOString()}`);
+  console.log(`[WEEKLY] API Base URL: ${API_BASE_URL}`);
   
   try {
     // Step 1: Fetch leaderboard data for all regions
@@ -245,8 +245,8 @@ async function runPreviousPeriodAutomation() {
     const endTime = new Date();
     const duration = (endTime - startTime) / 1000;
     
-    console.log(`\n[PREVIOUS-PERIOD] Previous period automation completed successfully at ${endTime.toISOString()}`);
-    console.log(`[PREVIOUS-PERIOD] Total duration: ${duration} seconds`);
+    console.log(`\n[WEEKLY] Previous period automation completed successfully at ${endTime.toISOString()}`);
+    console.log(`[WEEKLY] Total duration: ${duration} seconds`);
     
     return {
       status: 'success',
@@ -265,9 +265,9 @@ async function runPreviousPeriodAutomation() {
     const endTime = new Date();
     const duration = (endTime - startTime) / 1000;
     
-    console.error(`\n[PREVIOUS-PERIOD] Previous period automation failed at ${endTime.toISOString()}`);
-    console.error(`[PREVIOUS-PERIOD] Total duration: ${duration} seconds`);
-    console.error(`[PREVIOUS-PERIOD] Error: ${error.message}`);
+    console.error(`\n[WEEKLY] Previous period automation failed at ${endTime.toISOString()}`);
+    console.error(`[WEEKLY] Total duration: ${duration} seconds`);
+    console.error(`[WEEKLY] Error: ${error.message}`);
     
     return {
       status: 'error',
@@ -282,15 +282,15 @@ if (require.main === module) {
   runPreviousPeriodAutomation()
     .then(result => {
       if (result.status === 'success') {
-        console.log('[PREVIOUS-PERIOD] Automation completed successfully');
+        console.log('[WEEKLY] Automation completed successfully');
         process.exit(0);
       } else {
-        console.error('[PREVIOUS-PERIOD] Automation failed');
+        console.error('[WEEKLY] Automation failed');
         process.exit(1);
       }
     })
     .catch(error => {
-      console.error('[PREVIOUS-PERIOD] Unexpected error:', error);
+      console.error('[WEEKLY] Unexpected error:', error);
       process.exit(1);
     });
 }

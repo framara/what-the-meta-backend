@@ -2,8 +2,8 @@ const axios = require('axios');
 
 // Cancel jobs via Render API
 async function cancelJobs() {
-  const serviceId = 'srv-d21n8j6mcj7s73epb570';
-  const apiKey = 'rnd_5QypY8Is9KY3RS20twBK2jqUTMjr';
+  const serviceId = ''; // Render service ID
+  const apiKey = ''; // Render API key
   
   console.log('🔍 Checking for running jobs...\n');
   
