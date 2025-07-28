@@ -177,7 +177,7 @@ const CACHE_CONFIG = {
 // Rate limiting configuration
 const RATE_LIMIT_CONFIG = {
   WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000, // 15 minutes
-  MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+  MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || (process.env.NODE_ENV === 'development' ? 1000 : 100)
 };
 
 // Mythic+ season to dungeon mapping (to be filled in by automation)
