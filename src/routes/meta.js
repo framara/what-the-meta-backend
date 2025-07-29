@@ -47,6 +47,59 @@ router.get('/top-keys', async (req, res) => {
   }
 });
 
+// GET /meta/season-data/:season_id
+// Retrieves top 1000 keys for each period in a given season
+// Returns comprehensive data over time for AI analysis
+router.get('/season-data/:season_id', async (req, res) => {
+  const season_id = Number(req.params.season_id);
+  if (!season_id) {
+    return res.status(400).json({ error: 'season_id is required' });
+  }
+
+  try {
+    // Get all periods for the season
+    const periodsResult = await db.pool.query(
+      'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
+      [season_id]
+    );
+    const periods = periodsResult.rows;
+
+    if (periods.length === 0) {
+      return res.status(404).json({ error: 'No periods found for this season' });
+    }
+
+    // Get top 1000 keys for each period
+    const seasonData = [];
+    for (const period of periods) {
+      const keysResult = await db.pool.query(
+        'SELECT * FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
+        [season_id, period.id]
+      );
+
+      seasonData.push({
+        period_id: period.id,
+        keys_count: keysResult.rows.length,
+        keys: keysResult.rows
+      });
+    }
+
+    // Calculate summary statistics
+    const totalKeys = seasonData.reduce((sum, period) => sum + period.keys_count, 0);
+    const totalPeriods = seasonData.length;
+
+    res.json({
+      season_id,
+      total_periods: totalPeriods,
+      total_keys: totalKeys,
+      periods: seasonData
+    });
+
+  } catch (err) {
+    console.error('[SEASON DATA ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /meta/evolution/:season_id
 router.get('/spec-evolution/:season_id', async (req, res) => {
   const season_id = Number(req.params.season_id);
