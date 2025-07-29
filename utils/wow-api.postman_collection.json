@@ -17,7 +17,8 @@
     { "key": "dungeonId", "value": "247" },
     { "key": "periodId", "value": "1001" },
     { "key": "seasonId", "value": "14" },
-    { "key": "filename", "value": "eu-s14-p1001-d247.json" }
+    { "key": "filename", "value": "eu-s14-p1001-d247.json" },
+    { "key": "adminApiKey", "value": "your_secure_admin_api_key_here", "description": "Admin API key for protected routes" }
   ],
   "item": [
     {
@@ -76,33 +77,81 @@
     {
       "name": "Admin",
       "item": [
-        { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } },
-        { "name": "Clear Output Directory", "request": { "method": "POST", "url": "{{baseUrl}}/admin/clear-output", "description": "Deletes all files in the ./output directory (not allowed in production)." } },
-        { "name": "Refresh Materialized Views", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "url": "{{baseUrl}}/admin/refresh-views" } },
-        { "name": "Cleanup Leaderboard Runs", "request": {
-          "method": "POST",
-          "header": [
-            { "key": "Content-Type", "value": "application/json" }
-          ],
-          "body": {
-            "mode": "raw",
-            "raw": "{\n  \"season_id\": 14\n}"
-          },
-          "url": "{{baseUrl}}/admin/cleanup-leaderboard",
-          "description": "Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id). Optionally filter by season_id."}
+        { 
+          "name": "Test Admin Authentication", 
+          "request": { 
+            "method": "GET", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/test",
+            "description": "Test endpoint to verify admin authentication is working properly." 
+          } 
         },
-        { "name": "Vacuum Full", "request": {
-          "method": "POST",
-          "header": [
-            { "key": "Content-Type", "value": "application/json" }
-          ],
-          "body": {
-            "mode": "raw",
-            "raw": "{}"
-          },
-          "url": "{{baseUrl}}/admin/vacuum-full",
-          "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access and can take a long time."
-        }}
+        { 
+          "name": "Import All Leaderboard JSON", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/import-all-leaderboard-json" 
+          } 
+        },
+        { 
+          "name": "Clear Output Directory", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/clear-output",
+            "description": "Deletes all files in the ./output directory (not allowed in production)." 
+          } 
+        },
+        { 
+          "name": "Refresh Materialized Views", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/refresh-views" 
+          } 
+        },
+        { 
+          "name": "Cleanup Leaderboard Runs", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"season_id\": 14\n}"
+            },
+            "url": "{{baseUrl}}/admin/cleanup-leaderboard",
+            "description": "Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id). Optionally filter by season_id."
+          }
+        },
+        { 
+          "name": "Vacuum Full", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/vacuum-full",
+            "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access and can take a long time."
+          }
+        }
       ]
     },
     {
@@ -112,7 +161,10 @@
           "name": "Trigger Automation (Background)", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}"
@@ -125,7 +177,10 @@
           "name": "Trigger Automation (Synchronous)", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}"
@@ -138,6 +193,9 @@
           "name": "Automation Status", 
           "request": { 
             "method": "GET", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "url": "{{baseUrl}}/admin/automation/status",
             "description": "Check if the automation system is ready and get available endpoints."
           }
@@ -146,7 +204,10 @@
           "name": "Fetch Leaderboard Data", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}"
@@ -159,7 +220,10 @@
           "name": "Import Leaderboard Data", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}"
@@ -172,7 +236,10 @@
           "name": "Cleanup Data", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"season_id\": 14\n}"
@@ -185,7 +252,10 @@
           "name": "Refresh Views", 
           "request": { 
             "method": "POST", 
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}"

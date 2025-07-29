@@ -11,8 +11,21 @@ const { promisify } = require('util');
 const copyFrom = require('pg-copy-streams').from;
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
+const adminAuthMiddleware = require('../middleware/admin-auth');
 
 const router = express.Router();
+
+// Apply admin authentication middleware to all routes
+router.use(adminAuthMiddleware);
+
+// Test endpoint for admin authentication
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Admin authentication successful',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Import the automation functions
 const automation = require('../../scripts/render-automation');
@@ -435,6 +448,221 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     
   } catch (error) {
     console.error('[IMPORT ALL ERROR]', error);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// --- Optimized version of import-all endpoint for large datasets ---
+router.post('/import-all-leaderboard-json-fast', async (req, res) => {
+  try {
+    const outputDir = path.join(__dirname, '../output');
+    if (!fs.existsSync(outputDir)) {
+      return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
+    }
+    const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.json'));
+    if (files.length === 0) {
+      return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
+    }
+
+    console.log(`[IMPORT ALL FAST] Starting optimized bulk import for ${files.length} files...`);
+    let totalRuns = 0;
+    let totalMembers = 0;
+    let results = [];
+
+    // Use a single connection pool with higher limits
+    const pool = db.pool;
+    const BATCH_SIZE = 50; // Process 50 files per batch
+    const CONCURRENT_TASKS = 8; // Increased from 4 to 8 for better throughput
+    const limit = pLimit(CONCURRENT_TASKS);
+
+    let completed = 0;
+    const totalFiles = files.length;
+
+    // Process files in batches
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batchFiles = files.slice(i, i + BATCH_SIZE);
+      console.log(`[IMPORT ALL FAST] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(files.length/BATCH_SIZE)}`);
+
+      // Create a single temporary CSV for the entire batch
+      const batchRunsCsvPath = path.join(os.tmpdir(), `batch-runs-${Date.now()}.csv`);
+      const batchMembersCsvPath = path.join(os.tmpdir(), `batch-members-${Date.now()}.csv`);
+      const batchRunsCsv = fs.createWriteStream(batchRunsCsvPath);
+      const batchMembersCsv = fs.createWriteStream(batchMembersCsvPath);
+
+      // Process each file in the batch concurrently
+      const batchTasks = batchFiles.map(filename => limit(async () => {
+        const filePath = path.join(outputDir, filename);
+        let fileRuns = 0;
+        let fileMembers = 0;
+
+        try {
+          const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          fileRuns = runs.length;
+
+          // Write runs to the batch CSV
+          for (const run of runs) {
+            batchRunsCsv.write([
+              run.region,
+              run.season_id,
+              run.period_id,
+              run.dungeon_id,
+              run.realm_id,
+              run.completed_at,
+              run.duration_ms,
+              run.keystone_level,
+              run.score,
+              run.rank,
+              run.run_guid
+            ].map(x => x === undefined ? '' : x).join(',') + '\n');
+
+            // Write members to the batch CSV
+            if (run.members && run.members.length > 0) {
+              for (const m of run.members) {
+                batchMembersCsv.write([
+                  run.run_guid,
+                  m.character_name,
+                  m.class_id,
+                  m.spec_id,
+                  m.role
+                ].map(x => x === undefined ? '' : x).join(',') + '\n');
+                fileMembers++;
+              }
+            }
+          }
+
+          completed++;
+          printFileImportProgress(completed, totalFiles);
+          return { filename, runs: fileRuns, members: fileMembers };
+
+        } catch (err) {
+          console.error(`[IMPORT ALL FAST ERROR] File: ${filename}`, err);
+          return { filename, error: err.message };
+        }
+      }));
+
+      // Wait for all files in the batch to be processed
+      const batchResults = await Promise.allSettled(batchTasks);
+      
+      // Close the CSV streams
+      batchRunsCsv.end();
+      batchMembersCsv.end();
+
+      // Wait for CSV files to be fully written
+      await Promise.all([
+        new Promise(resolve => batchRunsCsv.on('finish', resolve)),
+        new Promise(resolve => batchMembersCsv.on('finish', resolve))
+      ]);
+
+      // Now process the entire batch in a single transaction
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Create temporary tables for this batch
+        await client.query(`
+          CREATE TEMP TABLE temp_leaderboard_runs (
+            region VARCHAR(8),
+            season_id INTEGER,
+            period_id INTEGER,
+            dungeon_id INTEGER,
+            realm_id INTEGER,
+            completed_at TIMESTAMP,
+            duration_ms INTEGER,
+            keystone_level INTEGER,
+            score DOUBLE PRECISION,
+            rank INTEGER,
+            run_guid UUID
+          ) ON COMMIT DROP;
+        `);
+
+        await client.query(`
+          CREATE TEMP TABLE temp_run_group_members (
+            run_guid UUID,
+            character_name VARCHAR(64),
+            class_id INTEGER,
+            spec_id INTEGER,
+            role VARCHAR(16)
+          ) ON COMMIT DROP;
+        `);
+
+        // Bulk copy the batch data
+        await Promise.all([
+          new Promise((resolve, reject) => {
+            const stream = client.query(copyFrom('COPY temp_leaderboard_runs FROM STDIN WITH (FORMAT csv)'));
+            const fileStream = fs.createReadStream(batchRunsCsvPath);
+            pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+          }),
+          new Promise((resolve, reject) => {
+            const stream = client.query(copyFrom('COPY temp_run_group_members FROM STDIN WITH (FORMAT csv)'));
+            const fileStream = fs.createReadStream(batchMembersCsvPath);
+            pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+          })
+        ]);
+
+        // Insert runs from temp table using a more efficient query
+        await client.query(`
+          INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+          SELECT DISTINCT ON (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+            region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid
+          FROM temp_leaderboard_runs
+          ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+          DO UPDATE SET 
+            score = EXCLUDED.score,
+            rank = EXCLUDED.rank,
+            realm_id = EXCLUDED.realm_id;
+        `);
+
+        // Insert members with better deduplication
+        await client.query(`
+          INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
+          SELECT DISTINCT ON (run_guid, character_name) 
+            run_guid, character_name, class_id, spec_id, role
+          FROM temp_run_group_members
+          WHERE run_guid IN (SELECT run_guid FROM leaderboard_run)
+          ON CONFLICT (run_guid, character_name) 
+          DO UPDATE SET
+            class_id = EXCLUDED.class_id,
+            spec_id = EXCLUDED.spec_id,
+            role = EXCLUDED.role;
+        `);
+
+        await client.query('COMMIT');
+
+        // Update totals and results
+        for (const result of batchResults) {
+          if (result.status === 'fulfilled' && result.value && (result.value.runs || result.value.members)) {
+            totalRuns += result.value.runs || 0;
+            totalMembers += result.value.members || 0;
+            results.push(result.value);
+          } else if (result.status === 'fulfilled') {
+            results.push(result.value);
+          } else {
+            results.push({ error: result.reason && result.reason.message });
+          }
+        }
+
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`[IMPORT ALL FAST ERROR] Batch processing error:`, err);
+        throw err;
+      } finally {
+        client.release();
+
+        // Clean up batch CSV files
+        try {
+          fs.unlinkSync(batchRunsCsvPath);
+          fs.unlinkSync(batchMembersCsvPath);
+        } catch (err) {
+          console.warn(`[IMPORT ALL FAST] Warning: Could not delete temporary files:`, err.message);
+        }
+      }
+    }
+
+    console.log(`[IMPORT ALL FAST] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
+    res.json({ status: 'OK', totalRuns, totalMembers, results });
+
+  } catch (error) {
+    console.error('[IMPORT ALL FAST ERROR]', error);
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });

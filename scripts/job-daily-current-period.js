@@ -16,12 +16,18 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         url,
         headers: {
           'Content-Type': 'application/json',
+          'X-Admin-API-Key': process.env.ADMIN_API_KEY
         },
         timeout: 7200000, // 2 hours
       };  
 
       if (data) {
         config.data = data;
+      }
+
+      // Validate admin API key is set
+      if (!process.env.ADMIN_API_KEY) {
+        throw new Error('ADMIN_API_KEY environment variable is not set');
       }
 
       console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
