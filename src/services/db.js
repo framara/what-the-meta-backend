@@ -6,7 +6,10 @@ const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  max: 10, // Limit pool size
+  max: 20,               // Increased pool size
+  min: 4,                // Minimum idle connections
+  idleTimeoutMillis: 60000,  // Close idle connections after 60s
+  connectionTimeoutMillis: 2000,  // Connection timeout
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 

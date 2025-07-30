@@ -100,4 +100,5 @@ Thumbs.db
 
 #output data
 src/output/
+backups/
 pgdata/

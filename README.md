@@ -68,21 +68,80 @@ This project provides a proxy for the Blizzard World of Warcraft Game Data API, 
 
 ---
 
-## PostgreSQL Docker Setup
+## Optimized PostgreSQL Setup
 
-- **Create a persistent data directory for PostgreSQL container**
-  - Example: `mkdir -p ./pgdata`
-- **Run the PostgreSQL Docker container**
-  - Use the official image: `postgres:16`
-  - Example command:
-    ```sh
-    docker run --name wow-postgres \
-      -e POSTGRES_PASSWORD=yourpassword \
-      -e POSTGRES_USER=wowuser \
-      -e POSTGRES_DB=wow_leaderboard \
-      -p 5432:5432 \
-      -v $(pwd)/pgdata:/var/lib/postgresql/data \
-      -d postgres:16
+### Requirements
+- Docker Desktop with at least:
+  - 8GB RAM allocated
+  - 4 CPU cores
+  - 50GB disk space
+
+### Quick Start
+1. Build and start the container:
+```bash
+docker-compose up -d
+```
+
+2. Check container health:
+```bash
+docker-compose ps
+docker logs wow-postgres
+```
+
+3. Monitor performance:
+```bash
+# Check container stats
+docker stats wow-postgres
+
+# Check PostgreSQL stats
+curl http://localhost:3000/admin/db/stats
+```
+
+### Configuration
+- PostgreSQL configuration is in `postgresql.conf`
+- Container resources are defined in `docker-compose.yml`
+- Database initialization is handled by `Dockerfile.postgres`
+
+### Data Migration
+If you need to migrate data from the old container:
+
+1. Stop the old container:
+```bash
+docker stop wow-postgres-old
+```
+
+2. Backup your data:
+```bash
+docker exec wow-postgres-old pg_dumpall -U wowuser > backup.sql
+```
+
+3. Start the new container:
+```bash
+docker-compose up -d
+```
+
+4. Restore the data:
+```bash
+cat backup.sql | docker exec -i wow-postgres psql -U wowuser
+```
+
+### Maintenance
+Regular maintenance tasks:
+
+1. Vacuum analyze (weekly):
+```bash
+curl -X POST http://localhost:3000/admin/db/analyze
+```
+
+2. Check slow queries:
+```bash
+curl http://localhost:3000/admin/db/stats | jq '.slow_queries'
+```
+
+3. Monitor table sizes:
+```bash
+curl http://localhost:3000/admin/db/stats | jq '.table_sizes'
+```
 
 ## Environment Variables
 

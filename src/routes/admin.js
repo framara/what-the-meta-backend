@@ -668,11 +668,13 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
 });
 
 // Cleanup endpoint: keep only top 1000 runs per (dungeon_id, period_id, season_id)
+// Optimized with CTE for better performance
 router.post('/cleanup-leaderboard', async (req, res) => {
   const { season_id } = req.body || {};
+  
+  // Use CTE approach for better performance (Strategy #2)
   let sql = `
-    DELETE FROM leaderboard_run
-    WHERE id IN (
+    WITH to_delete AS (
       SELECT id FROM (
         SELECT
           id,
@@ -682,16 +684,32 @@ router.post('/cleanup-leaderboard', async (req, res) => {
           ) AS rn
         FROM leaderboard_run
         ${season_id ? 'WHERE season_id = $1' : ''}
-      ) sub
+      ) ranked
       WHERE rn > 1000
-    );
+    )
+    DELETE FROM leaderboard_run
+    WHERE id IN (SELECT id FROM to_delete);
   `;
+  
   try {
+    console.log(`[CLEANUP] Starting cleanup for ${season_id ? `season_id = ${season_id}` : 'all seasons'}`);
+    const startTime = Date.now();
+    
     const result = season_id
       ? await db.pool.query(sql, [season_id])
       : await db.pool.query(sql);
-    res.json({ status: 'OK', rows_deleted: result.rowCount });
+    
+    const duration = Date.now() - startTime;
+    console.log(`[CLEANUP] Completed in ${duration}ms. Deleted ${result.rowCount} rows.`);
+    
+    res.json({ 
+      status: 'OK', 
+      rows_deleted: result.rowCount,
+      duration_ms: duration,
+      message: `Deleted ${result.rowCount} rows in ${duration}ms`
+    });
   } catch (err) {
+    console.error('[CLEANUP ERROR]', err);
     res.status(500).json({ status: 'ERROR', error: err.message });
   }
 });
@@ -723,10 +741,11 @@ router.post('/clear-output', async (req, res) => {
 // --- Refresh materialized views endpoint ---
 router.post('/refresh-views', async (req, res) => {
   try {
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_group;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_global;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_period;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_dungeon;');
+    // Use CONCURRENTLY refresh to allow views to remain available during refresh
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_group;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_global;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_period;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_dungeon;');
     res.json({ status: 'OK', message: 'All materialized views refreshed.' });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
@@ -885,6 +904,197 @@ router.post('/vacuum-full', async (req, res) => {
     });
   } catch (error) {
     console.error('[ADMIN ERROR] VACUUM FULL failed:', error.message);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// --- Database monitoring endpoints ---
+
+// GET /admin/db/stats - Get database performance statistics
+router.get('/db/stats', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    
+    try {
+      // Get connection pool stats
+      const poolStats = {
+        totalCount: db.pool.totalCount,
+        idleCount: db.pool.idleCount,
+        waitingCount: db.pool.waitingCount
+      };
+
+      // Get PostgreSQL server stats
+      const serverStats = await client.query(`
+        SELECT 
+          version(),
+          current_setting('max_connections')::int as max_connections,
+          current_setting('shared_buffers') as shared_buffers,
+          current_setting('work_mem') as work_mem,
+          current_setting('maintenance_work_mem') as maintenance_work_mem,
+          current_setting('effective_cache_size') as effective_cache_size
+      `);
+
+      // Get active connections
+      const activeConnections = await client.query(`
+        SELECT 
+          count(*) as active_connections,
+          count(*) filter (where state = 'active') as active_queries,
+          count(*) filter (where state = 'idle') as idle_connections,
+          count(*) filter (where state = 'idle in transaction') as idle_in_transaction
+        FROM pg_stat_activity 
+        WHERE datname = current_database()
+      `);
+
+      // Get table sizes
+      const tableSizes = await client.query(`
+        SELECT 
+          n.nspname as schemaname,
+          c.relname as tablename,
+          pg_size_pretty(pg_total_relation_size(n.nspname||'.'||c.relname)) as size,
+          pg_total_relation_size(n.nspname||'.'||c.relname) as size_bytes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' 
+        AND c.relkind = 'r'  -- Only tables
+        ORDER BY pg_total_relation_size(n.nspname||'.'||c.relname) DESC
+        LIMIT 10
+      `);
+
+      // Get index usage stats
+      const indexStats = await client.query(`
+        SELECT 
+          s.schemaname,
+          s.relname as tablename,
+          s.indexrelname as indexname,
+          s.idx_scan as index_scans,
+          s.idx_tup_read as tuples_read,
+          s.idx_tup_fetch as tuples_fetched
+        FROM pg_stat_all_indexes s
+        JOIN pg_class c ON c.oid = s.relid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+        ORDER BY s.idx_scan DESC 
+        LIMIT 10
+      `);
+
+      // Get slow queries (if pg_stat_statements extension is available)
+      let slowQueries = { rows: [] };
+      try {
+        const slowQueriesResult = await client.query(`
+          SELECT 
+            query,
+            calls,
+            total_time,
+            mean_time,
+            rows
+          FROM pg_stat_statements 
+          ORDER BY total_time DESC 
+          LIMIT 10
+        `);
+        slowQueries = slowQueriesResult;
+      } catch (err) {
+        console.log('pg_stat_statements extension not available, skipping slow queries');
+      }
+
+      res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        pool: poolStats,
+        server: serverStats.rows[0],
+        connections: activeConnections.rows[0],
+        table_sizes: tableSizes.rows,
+        index_stats: indexStats.rows,
+        slow_queries: slowQueries.rows
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/db/performance-test - Run a performance test
+router.get('/db/performance-test', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    const results = {};
+
+    try {
+      // Test 1: Simple query performance
+      const start1 = Date.now();
+      await client.query('SELECT COUNT(*) FROM leaderboard_run');
+      results.simple_count_query_ms = Date.now() - start1;
+
+      // Test 2: Complex query performance
+      const start2 = Date.now();
+      await client.query(`
+        SELECT 
+          dungeon_id, 
+          COUNT(*) as run_count,
+          AVG(keystone_level) as avg_level
+        FROM leaderboard_run 
+        GROUP BY dungeon_id 
+        ORDER BY run_count DESC 
+        LIMIT 10
+      `);
+      results.complex_group_query_ms = Date.now() - start2;
+
+      // Test 3: Index scan performance
+      const start3 = Date.now();
+      await client.query(`
+        SELECT COUNT(*) 
+        FROM leaderboard_run 
+        WHERE season_id = 1 AND period_id = 1
+      `);
+      results.index_scan_query_ms = Date.now() - start3;
+
+      // Test 4: Concurrent connection test
+      const start4 = Date.now();
+      const concurrentQueries = Array(10).fill().map(() => 
+        client.query('SELECT 1')
+      );
+      await Promise.all(concurrentQueries);
+      results.concurrent_queries_ms = Date.now() - start4;
+
+      res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        performance_tests: results
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/db/analyze - Run ANALYZE on all tables
+router.post('/db/analyze', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    
+    try {
+      const start = Date.now();
+      await client.query('ANALYZE');
+      const duration = Date.now() - start;
+
+      res.json({
+        status: 'OK',
+        message: 'ANALYZE completed successfully',
+        duration_ms: duration
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });

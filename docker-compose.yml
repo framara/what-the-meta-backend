@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    container_name: wow-postgres
+    ports:
+      - "5432:5432"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Proper WSL2 host resolution
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data  # Existing data directory
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf  # Host-based authentication config
+      # Comment out pg_wal for now as we're using existing data
+      # - ./pg_wal:/var/lib/postgresql/pg_wal
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: '8G'
+        reservations:
+          cpus: '2'
+          memory: '4G'
+    shm_size: '2gb'  # Increased for better parallel query performance
+    command: postgres
+        -c config_file=/etc/postgresql/postgresql.conf
+        -c shared_buffers=2GB
+        -c work_mem=128MB
+        -c maintenance_work_mem=768MB
+        -c effective_cache_size=6GB
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c max_parallel_workers=4
+        -c max_parallel_workers_per_gather=2
+        -c max_worker_processes=4
+    environment:
+      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_USER: wowuser
+      POSTGRES_DB: wow_leaderboard
+      PGDATABASE: wow_leaderboard
+      TZ: UTC
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wowuser -d wow_leaderboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped 
