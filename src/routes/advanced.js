@@ -2,6 +2,48 @@ const express = require('express');
 const proxyService = require('../services/proxy');
 const validateRegion = require('../middleware/region');
 const { SEASON_DUNGEONS, SEASON_NAMES, WOW_DUNGEONS, WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
+
+// Helper: get keystone_upgrades for a dungeonId from WOW_DUNGEONS
+function getKeystoneUpgradesForDungeon(dungeonId) {
+  const dungeon = WOW_DUNGEONS.find(d => d.id === Number(dungeonId));
+  return dungeon && Array.isArray(dungeon.keystone_upgrades) ? dungeon.keystone_upgrades : null;
+}
+
+// Helper: fallback score calculation (Blizzard-like, using keystone level, duration, and keystone_upgrades)
+function calculateFallbackScore(keystoneLevel, keystoneUpgrades, durationMs) {
+  if (!keystoneLevel || !Array.isArray(keystoneUpgrades) || !durationMs) return null;
+  // Sort upgrades by upgrade_level ascending
+  const sorted = [...keystoneUpgrades].sort((a, b) => a.upgrade_level - b.upgrade_level);
+  const timer1 = sorted.find(u => u.upgrade_level === 1)?.qualifying_duration;
+  const timer2 = sorted.find(u => u.upgrade_level === 2)?.qualifying_duration;
+  const timer3 = sorted.find(u => u.upgrade_level === 3)?.qualifying_duration;
+  if (!timer1) return null;
+  // Official base score
+  const base = 60 + (Number(keystoneLevel) * 7.5);
+  // Timed run (under 1-chest)
+  if (durationMs <= timer1) {
+    // Bonus for being under timer, up to 1-chest
+    if (timer2 && durationMs <= timer2) {
+      // 2-chest or better
+      if (timer3 && durationMs <= timer3) {
+        // 3-chest or better: max bonus
+        return base + 15;
+      } else {
+        // Between 2-chest and 3-chest
+        const bonus = ((timer2 - durationMs) / (timer2 - timer3)) * 7.5;
+        return base + 7.5 + Math.max(0, bonus);
+      }
+    } else {
+      // Between 1-chest and 2-chest
+      const bonus = ((timer1 - durationMs) / (timer1 - timer2)) * 7.5;
+      return base + Math.max(0, bonus);
+    }
+  } else {
+    // Overtime penalty
+    const penalty = ((durationMs - timer1) / (timer1 * 0.4)) * 7.5;
+    return Math.max(0.01, base - penalty);
+  }
+}
 const fs = require('fs');
 const path = require('path');
 const pLimit = require('p-limit');
@@ -242,7 +284,13 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
                     completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
                     duration_ms: group.duration,
                     keystone_level: group.keystone_level,
-                    score: group.mythic_rating ? group.mythic_rating.rating : null,
+                    score: (group.mythic_rating && group.mythic_rating.rating != null)
+                      ? group.mythic_rating.rating
+                      : (() => {
+                          const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                          const score = calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                          return score != null ? Number(score.toFixed(5)) : null;
+                        })(),
                     rank: group.ranking,
                     run_guid,
                     members: group.members.map(member => {
@@ -332,7 +380,12 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
                   completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
                   duration_ms: group.duration,
                   keystone_level: group.keystone_level,
-                  score: group.mythic_rating ? group.mythic_rating.rating : null,
+                  score: (group.mythic_rating && group.mythic_rating.rating != null)
+                    ? group.mythic_rating.rating
+                    : (() => {
+                        const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                        return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                      })(),
                   rank: group.ranking,
                   run_guid,
                   members: group.members.map(member => {
