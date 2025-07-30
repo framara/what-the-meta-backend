@@ -352,12 +352,18 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         const membersCsv = fs.createWriteStream(membersCsvPath);
         
         let memberCount = 0;
+        let unknownCount = 0;
         for (const run of runs) {
           if (run.members && run.members.length > 0 && successfulRunGuids.has(run.run_guid)) {
             for (const m of run.members) {
+              // Use 'unknown' for null or empty character names
+              const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
+              if (characterName === 'unknown') {
+                unknownCount++;
+              }
               membersCsv.write([
                 run.run_guid,
-                m.character_name,
+                characterName,
                 m.class_id,
                 m.spec_id,
                 m.role
@@ -365,6 +371,9 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
               memberCount++;
             }
           }
+        }
+        if (unknownCount > 0) {
+          console.log(`[IMPORT ALL] Used 'unknown' for ${unknownCount} members with null/empty character names`);
         }
         membersCsv.end();
         
@@ -518,9 +527,11 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
             // Write members to the batch CSV
             if (run.members && run.members.length > 0) {
               for (const m of run.members) {
+                // Use 'unknown' for null or empty character names
+                const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
                 batchMembersCsv.write([
                   run.run_guid,
-                  m.character_name,
+                  characterName,
                   m.class_id,
                   m.spec_id,
                   m.role
