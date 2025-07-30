@@ -286,11 +286,11 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
                     completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
                     duration_ms: group.duration,
                     keystone_level: group.keystone_level,
-                    score: (group.mythic_rating && group.mythic_rating.rating != null)
+                    score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
                       ? group.mythic_rating.rating
                       : (() => {
                           const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
-                          return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                          return score = calculateFallbackScore(group.keystone_level, upgrades, group.duration);
                         })(),
                     rank: group.ranking,
                     run_guid,
@@ -381,12 +381,12 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
                   completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
                   duration_ms: group.duration,
                   keystone_level: group.keystone_level,
-                  score: (group.mythic_rating && group.mythic_rating.rating != null)
-                    ? group.mythic_rating.rating
-                    : (() => {
-                        const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
-                        return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
-                      })(),
+                  score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
+                      ? group.mythic_rating.rating
+                      : (() => {
+                          const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                          return score = calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                        })(),
                   rank: group.ranking,
                   run_guid,
                   members: group.members.map(member => {
