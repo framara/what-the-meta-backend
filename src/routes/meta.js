@@ -100,7 +100,7 @@ router.get('/season-data/:season_id', async (req, res) => {
   }
 });
 
-// GET /meta/evolution/:season_id
+// GET /meta/spec-evolution/:season_id
 router.get('/spec-evolution/:season_id', async (req, res) => {
   const season_id = Number(req.params.season_id);
   if (!season_id) {

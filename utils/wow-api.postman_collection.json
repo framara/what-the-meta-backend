@@ -71,7 +71,8 @@
         { "name": "Top Keys (Period)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&limit=100" } },
         { "name": "Top Keys (Dungeon)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&dungeon_id={{dungeonId}}&limit=100" } },
         { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } },
-        { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } }
+        { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } },
+        { "name": "Season Data (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/season-data/{{seasonId}}" } }
       ]
     },
     {
@@ -96,6 +97,16 @@
               { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
             ],
             "url": "{{baseUrl}}/admin/import-all-leaderboard-json" 
+          } 
+        },
+        { 
+          "name": "Import All Leaderboard JSON (fast)", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/import-all-leaderboard-json-fast" 
           } 
         },
         { 
