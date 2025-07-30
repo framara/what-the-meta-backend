@@ -20,6 +20,7 @@ function calculateFallbackScore(keystoneLevel, keystoneUpgrades, durationMs) {
   if (!timer1) return null;
   // Official base score
   const base = 60 + (Number(keystoneLevel) * 7.5);
+  let score;
   // Timed run (under 1-chest)
   if (durationMs <= timer1) {
     // Bonus for being under timer, up to 1-chest
@@ -27,22 +28,23 @@ function calculateFallbackScore(keystoneLevel, keystoneUpgrades, durationMs) {
       // 2-chest or better
       if (timer3 && durationMs <= timer3) {
         // 3-chest or better: max bonus
-        return base + 15;
+        score = base + 15;
       } else {
         // Between 2-chest and 3-chest
         const bonus = ((timer2 - durationMs) / (timer2 - timer3)) * 7.5;
-        return base + 7.5 + Math.max(0, bonus);
+        score = base + 7.5 + Math.max(0, bonus);
       }
     } else {
       // Between 1-chest and 2-chest
       const bonus = ((timer1 - durationMs) / (timer1 - timer2)) * 7.5;
-      return base + Math.max(0, bonus);
+      score = base + Math.max(0, bonus);
     }
   } else {
-    // Overtime penalty
-    const penalty = ((durationMs - timer1) / (timer1 * 0.4)) * 7.5;
-    return Math.max(0.01, base - penalty);
+    // Depleted run: scale score by timer1/durationMs
+    score = base * (timer1 / durationMs);
   }
+  // Clamp to minimum 0.01 and round to 5 decimals
+  return Number(Math.max(0.01, score).toFixed(5));
 }
 const fs = require('fs');
 const path = require('path');
@@ -288,8 +290,7 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
                       ? group.mythic_rating.rating
                       : (() => {
                           const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
-                          const score = calculateFallbackScore(group.keystone_level, upgrades, group.duration);
-                          return score != null ? Number(score.toFixed(5)) : null;
+                          return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
                         })(),
                     rank: group.ranking,
                     run_guid,
