@@ -610,6 +610,22 @@ const SEASON_METADATA = {
   14: { expansion: 'The War Within', patch: '11.1', name: 'TWW S2' }
 };
 
+const EXPANSION_METADATA = {
+  0: { name: 'World of Warcraft', shortName: 'WoW', seasons: [] },
+  1: { name: 'The Burning Crusade', shortName: 'TBC', seasons: [] },
+  2: { name: 'Wrath of the Lich King', shortName: 'WOTLK', seasons: [] },
+  3: { name: 'Cataclysm', shortName: 'Cata', seasons: [] },
+  4: { name: 'Mists of Pandaria', shortName: 'MoP', seasons: [] },
+  5: { name: 'Warlords of Draenor', shortName: 'WoD', seasons: [] },
+  6: { name: 'Legion', shortName: 'Legion', seasons: [] },
+  7: { name: 'Battle for Azeroth', shortName: 'BfA', seasons: [1, 2, 3, 4] },
+  8: { name: 'Shadowlands', shortName: 'SL', seasons: [5, 6, 7, 8] },
+  9: { name: 'Dragonflight', shortName: 'DF', seasons: [9, 10, 11, 12] },
+  10: { name: 'The War Within', shortName: 'TWW', seasons: [13, 14, 15, 16] },
+  11: { name: 'Midnight', shortName: 'MN', seasons: [17, 18, 19, 20] },
+  12: { name: 'The Last Titan', shortName: 'TLT', seasons: [21, 22, 23, 24] },
+};
+
 module.exports = {
   API_ENDPOINTS,
   HTTP_STATUS,
@@ -624,4 +640,5 @@ module.exports = {
   WOW_CLASS_COLORS,
   WOW_SPEC_ROLES,
   SEASON_METADATA,
+  EXPANSION_METADATA
 }; 

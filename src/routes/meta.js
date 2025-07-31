@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../services/db');
+const { SEASON_METADATA, EXPANSION_METADATA } = require('../config/constants');
 
 const router = express.Router();
 
@@ -12,8 +13,28 @@ async function getSpecEvolutionForSeason(season_id) {
   );
   const periods = periodsResult.rows;
   
+  // Get season and expansion metadata
+  const seasonMetadata = SEASON_METADATA[season_id];
+  let expansionId = null;
+  let expansionName = null;
+  let seasonName = null;
+  
+  if (seasonMetadata) {
+    seasonName = seasonMetadata.name;
+    // Find the expansion that contains this season
+    for (const [expId, expansion] of Object.entries(EXPANSION_METADATA)) {
+      if (expansion.seasons && expansion.seasons.includes(season_id)) {
+        expansionId = parseInt(expId);
+        expansionName = expansion.name;
+        break;
+      }
+    }
+  }
+  
   // For each period, get top keys and aggregate spec popularity
   const evolution = [];
+  let weekCounter = 1;
+  
   for (const period of periods) {
     const keysResult = await db.pool.query(
       'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
@@ -29,16 +50,27 @@ async function getSpecEvolutionForSeason(season_id) {
     
     // Only include periods that have spec data
     if (Object.keys(specCounts).length > 0) {
+      const periodLabel = seasonName ? `${seasonName} - Week ${weekCounter}` : null;
+      
       evolution.push({
         period_id: period.id,
+        week: weekCounter,
+        period_label: periodLabel,
         spec_counts: specCounts
       });
+      weekCounter++;
     }
   }
   
   // Only return season data if it has non-empty periods
   if (evolution.length > 0) {
-    return { season_id, evolution };
+    return { 
+      season_id, 
+      expansion_id: expansionId,
+      expansion_name: expansionName,
+      season_name: seasonName,
+      evolution 
+    };
   }
   return null; // Return null for seasons with only empty periods
 }
