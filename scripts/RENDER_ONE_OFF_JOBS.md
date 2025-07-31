@@ -296,11 +296,11 @@ The one-off job performs the following steps in order:
 - **Output:** Database optimized for performance
 - **Duration:** 5-15 minutes
 
-### Step 5: Perform VACUUM FULL
-- **Purpose:** Reclaims storage space and defragments database tables
-- **Action:** Calls `POST /admin/vacuum-full`
-- **Output:** Database storage optimized
-- **Duration:** 10-60 minutes (depends on database size)
+### Step 5: Perform VACUUM ANALYZE
+- **Purpose:** Updates statistics and reclaims some storage space (safer than VACUUM FULL)
+- **Action:** Calls `POST /admin/vacuum-analyze`
+- **Output:** Database statistics updated and some space reclaimed
+- **Duration:** 5-30 minutes (much faster than VACUUM FULL)
 
 ### Step 6: Refresh Materialized Views
 - **Purpose:** Updates all materialized views with latest data
@@ -309,9 +309,9 @@ The one-off job performs the following steps in order:
 - **Duration:** 5-15 minutes
 
 ### Total Duration
-- **Typical:** 30-120 minutes
+- **Typical:** 20-90 minutes (reduced due to VACUUM ANALYZE)
 - **Peak times:** May take longer due to Blizzard API rate limits
-- **Large datasets:** Can take 2-3 hours for very large imports
+- **Large datasets:** Can take 1-2 hours for very large imports
 
 ### Error Handling
 - Each step includes retry logic with exponential backoff

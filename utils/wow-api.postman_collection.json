@@ -160,7 +160,23 @@
               "raw": "{}"
             },
             "url": "{{baseUrl}}/admin/vacuum-full",
-            "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access and can take a long time."
+            "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access, can take a very long time (potentially hours), and blocks all other database operations. Use with caution."
+          }
+        },
+        { 
+          "name": "Vacuum Analyze", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/vacuum-analyze",
+            "description": "Performs VACUUM ANALYZE on the database to update statistics and reclaim some storage space. This operation is safer than VACUUM FULL as it doesn't require exclusive access and won't block other operations."
           }
         }
       ]

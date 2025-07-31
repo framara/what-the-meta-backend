@@ -897,25 +897,73 @@ router.post('/automation/refresh-views', async (req, res) => {
   }
 });
 
-// POST /admin/vacuum-full - Perform VACUUM FULL on the database
+// POST /admin/vacuum-full - Perform VACUUM FULL on the database (intensive operation)
 router.post('/vacuum-full', async (req, res) => {
   try {
     console.log('[ADMIN] VACUUM FULL started');
     
-    // VACUUM FULL requires exclusive access and can take a long time
-    // It's recommended to run this during low-traffic periods
-    const result = await db.pool.query('VACUUM FULL');
-    
-    console.log('[ADMIN] VACUUM FULL completed');
-    
-    res.json({
-      status: 'OK',
-      message: 'VACUUM FULL completed successfully',
-      result: result
-    });
+    // Set a longer timeout for VACUUM operations
+    const client = await db.pool.connect();
+    try {
+      // Set statement timeout to 30 minutes for VACUUM operations
+      await client.query('SET statement_timeout = 21600000'); // 6 hours
+      
+      // VACUUM FULL requires exclusive access and can take a very long time
+      // It reclaims all available disk space and defragments tables
+      const result = await client.query('VACUUM FULL');
+      
+      console.log('[ADMIN] VACUUM FULL completed');
+      
+      res.json({
+        status: 'OK',
+        message: 'VACUUM FULL completed successfully',
+        result: result
+      });
+    } finally {
+      client.release();
+    }
   } catch (error) {
     console.error('[ADMIN ERROR] VACUUM FULL failed:', error.message);
-    res.status(500).json({ status: 'NOT OK', error: error.message });
+    res.status(500).json({ 
+      status: 'NOT OK', 
+      error: error.message,
+      note: 'VACUUM FULL is very intensive and may timeout. Consider using /admin/vacuum-analyze for safer operation'
+    });
+  }
+});
+
+// POST /admin/vacuum-analyze - Perform VACUUM ANALYZE on the database
+router.post('/vacuum-analyze', async (req, res) => {
+  try {
+    console.log('[ADMIN] VACUUM ANALYZE started');
+    
+    // Set a longer timeout for VACUUM operations
+    const client = await db.pool.connect();
+    try {
+      // Set statement timeout to 30 minutes for VACUUM operations
+      await client.query('SET statement_timeout = 21600000'); // 6 hours
+      
+      // VACUUM ANALYZE updates statistics and reclaims some space
+      // It doesn't require exclusive access and won't block other operations
+      const result = await client.query('VACUUM ANALYZE');
+      
+      console.log('[ADMIN] VACUUM ANALYZE completed');
+      
+      res.json({
+        status: 'OK',
+        message: 'VACUUM ANALYZE completed successfully',
+        result: result
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('[ADMIN ERROR] VACUUM ANALYZE failed:', error.message);
+    res.status(500).json({ 
+      status: 'NOT OK', 
+      error: error.message,
+      note: 'If this operation times out, consider running it during low-traffic periods'
+    });
   }
 });
 

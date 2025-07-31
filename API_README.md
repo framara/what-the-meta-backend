@@ -686,13 +686,28 @@ Run ANALYZE on all tables.
 ```
 
 ### POST /admin/vacuum-full
-Perform VACUUM FULL on the database.
+Perform VACUUM FULL on the database. This operation requires exclusive access, can take a very long time (potentially hours), and blocks all other database operations. Use with caution.
 
 **Response:**
 ```json
 {
   "status": "OK",
   "message": "VACUUM FULL completed successfully",
+  "result": {
+    "command": "VACUUM",
+    "rowCount": null
+  }
+}
+```
+
+### POST /admin/vacuum-analyze
+Perform VACUUM ANALYZE on the database. This operation updates statistics and reclaims some storage space. It's safer than VACUUM FULL as it doesn't require exclusive access and won't block other operations.
+
+**Response:**
+```json
+{
+  "status": "OK",
+  "message": "VACUUM ANALYZE completed successfully",
   "result": {
     "command": "VACUUM",
     "rowCount": null
