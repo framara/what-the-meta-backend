@@ -3,6 +3,46 @@ const db = require('../services/db');
 
 const router = express.Router();
 
+// Helper function to get spec evolution data for a specific season
+async function getSpecEvolutionForSeason(season_id) {
+  // Get all periods for the season
+  const periodsResult = await db.pool.query(
+    'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
+    [season_id]
+  );
+  const periods = periodsResult.rows;
+  
+  // For each period, get top keys and aggregate spec popularity
+  const evolution = [];
+  for (const period of periods) {
+    const keysResult = await db.pool.query(
+      'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
+      [season_id, period.id]
+    );
+    // Aggregate spec counts for this period
+    const specCounts = {};
+    for (const row of keysResult.rows) {
+      for (const m of row.members || []) {
+        specCounts[m.spec_id] = (specCounts[m.spec_id] || 0) + 1;
+      }
+    }
+    
+    // Only include periods that have spec data
+    if (Object.keys(specCounts).length > 0) {
+      evolution.push({
+        period_id: period.id,
+        spec_counts: specCounts
+      });
+    }
+  }
+  
+  // Only return season data if it has non-empty periods
+  if (evolution.length > 0) {
+    return { season_id, evolution };
+  }
+  return null; // Return null for seasons with only empty periods
+}
+
 // GET /meta/top-keys
 // If only season_id is provided, query the global view (top_100_keys_global)
 // If season_id and period_id are provided (no dungeon_id), query the per-period view (top_100_keys_per_period)
@@ -100,6 +140,57 @@ router.get('/season-data/:season_id', async (req, res) => {
   }
 });
 
+// GET /meta/spec-evolution
+// Aggregates spec evolution data from all seasons that have data
+router.get('/spec-evolution', async (req, res) => {
+  try {
+    // Get all seasons that have data
+    const seasonsResult = await db.pool.query(
+      'SELECT DISTINCT season_id FROM period ORDER BY season_id',
+      []
+    );
+    const seasons = seasonsResult.rows;
+
+    if (seasons.length === 0) {
+      return res.status(404).json({ error: 'No seasons found with data' });
+    }
+
+    // Get spec evolution data for all seasons using the helper function
+    const allSeasonsData = [];
+    
+    for (const season of seasons) {
+      const season_id = season.season_id;
+      
+      // Check if this season has any periods
+      const periodsResult = await db.pool.query(
+        'SELECT id FROM period WHERE season_id = $1 LIMIT 1',
+        [season_id]
+      );
+      
+      if (periodsResult.rows.length === 0) {
+        continue; // Skip seasons with no periods
+      }
+
+      // Use the helper function to get spec evolution for this season
+      const seasonData = await getSpecEvolutionForSeason(season_id);
+      
+      // Only include seasons that have non-empty periods
+      if (seasonData !== null) {
+        allSeasonsData.push(seasonData);
+      }
+    }
+
+    res.json({
+      total_seasons: allSeasonsData.length,
+      seasons: allSeasonsData
+    });
+
+  } catch (err) {
+    console.error('[META AGGREGATE ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /meta/spec-evolution/:season_id
 router.get('/spec-evolution/:season_id', async (req, res) => {
   const season_id = Number(req.params.season_id);
@@ -107,32 +198,15 @@ router.get('/spec-evolution/:season_id', async (req, res) => {
     return res.status(400).json({ error: 'season_id is required' });
   }
   try {
-    // Get all periods for the season
-    const periodsResult = await db.pool.query(
-      'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
-      [season_id]
-    );
-    const periods = periodsResult.rows;
-    // For each period, get top keys and aggregate spec popularity
-    const evolution = [];
-    for (const period of periods) {
-      const keysResult = await db.pool.query(
-        'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
-        [season_id, period.id]
-      );
-      // Aggregate spec counts for this period
-      const specCounts = {};
-      for (const row of keysResult.rows) {
-        for (const m of row.members || []) {
-          specCounts[m.spec_id] = (specCounts[m.spec_id] || 0) + 1;
-        }
-      }
-      evolution.push({
-        period_id: period.id,
-        spec_counts: specCounts
-      });
+    // Use the helper function to get spec evolution for this season
+    const result = await getSpecEvolutionForSeason(season_id);
+    
+    // If the season has no non-empty periods, return 404
+    if (result === null) {
+      return res.status(404).json({ error: 'No spec evolution data found for this season' });
     }
-    res.json({ season_id, evolution });
+    
+    res.json(result);
   } catch (err) {
     console.error('[EVOLUTION ERROR]', err);
     res.status(500).json({ error: err.message });
