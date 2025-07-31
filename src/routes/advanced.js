@@ -238,6 +238,18 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
     const specifiedRegion = req.query.region;
     const regionsToProcess = specifiedRegion ? [specifiedRegion.toLowerCase()] : ['us', 'eu', 'kr', 'tw'];
     
+    // Parse period filtering parameters
+    const fromPeriod = req.query.fromPeriod ? parseInt(req.query.fromPeriod, 10) : null;
+    const toPeriod = req.query.toPeriod ? parseInt(req.query.toPeriod, 10) : null;
+    
+    // Validate period parameters
+    if (fromPeriod && toPeriod && fromPeriod > toPeriod) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'fromPeriod cannot be greater than toPeriod' 
+      });
+    }
+    
     const { seasonId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
     const dungeons = SEASON_DUNGEONS[seasonNum];
@@ -264,7 +276,7 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
 
         const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { ...req.query, id: seasonId });
         const periodsRaw = seasonResp.data.periods || [];
-        const periods = periodsRaw.map(p => {
+        let periods = periodsRaw.map(p => {
           const href = p && p.key && p.key.href;
           if (href) {
             const match = href.match(/period\/(\d+)/);
@@ -272,10 +284,21 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
           }
           return null;
         }).filter(Boolean);
+        
+        // Apply period filtering if specified
+        if (fromPeriod || toPeriod) {
+          periods = periods.filter(periodId => {
+            const periodNum = parseInt(periodId, 10);
+            if (fromPeriod && periodNum < fromPeriod) return false;
+            if (toPeriod && periodNum > toPeriod) return false;
+            return true;
+          });
+        }
+        
         if (periods.length === 0) {
-          console.error(`[NO PERIODS] No periods found for season ${seasonId} in region ${region}`);
+          console.error(`[NO PERIODS] No periods found for season ${seasonId} in region ${region}${fromPeriod || toPeriod ? ` (filtered: fromPeriod=${fromPeriod}, toPeriod=${toPeriod})` : ''}`);
           failedCount++;
-          failedReasons.push(`No periods found for season ${seasonId} in region ${region}`);
+          failedReasons.push(`No periods found for season ${seasonId} in region ${region}${fromPeriod || toPeriod ? ` (filtered: fromPeriod=${fromPeriod}, toPeriod=${toPeriod})` : ''}`);
           continue;
         }
         const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
@@ -364,7 +387,12 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
       failedCount: failedCount,
       failedReasons: failedReasons,
       regionsProcessed: regionsToProcess,
-      regionsCount: regionsToProcess.length
+      regionsCount: regionsToProcess.length,
+      periodFilter: {
+        fromPeriod: fromPeriod,
+        toPeriod: toPeriod,
+        applied: !!(fromPeriod || toPeriod)
+      }
     });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });

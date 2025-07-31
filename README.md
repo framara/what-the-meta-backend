@@ -118,7 +118,7 @@ LOG_LEVEL=info
 - **Meta Analysis**: `GET /meta/*` - Specialized endpoints for data analysis
 
 ### Advanced Aggregation
-- **Season Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/` - Collects all season data
+- **Season Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/` - Collects all season data (supports period filtering with `fromPeriod` and `toPeriod` query parameters)
 - **Period Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/:periodId` - Collects specific period data
 
 ### Admin Endpoints (Authentication Required)
@@ -151,6 +151,9 @@ See [Database Documentation](DB_README.md) for complete schema details.
 ```bash
 # Collect all season data
 GET /wow/advanced/mythic-leaderboard/14/
+
+# Collect season data with period filtering
+GET /wow/advanced/mythic-leaderboard/14/?fromPeriod=1018&toPeriod=1020
 
 # Collect specific period data  
 GET /wow/advanced/mythic-leaderboard/14/1018

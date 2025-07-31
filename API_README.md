@@ -193,11 +193,15 @@ Aggregates and writes leaderboard data for all dungeons and periods in a season.
 
 **Query Parameters:**
 - `region` (optional): Region code. If not specified, processes all 4 regions (us, eu, kr, tw)
+- `fromPeriod` (optional): Starting period ID to filter from (inclusive)
+- `toPeriod` (optional): Ending period ID to filter to (inclusive)
 
 **Example Request:**
 ```
 GET /wow/advanced/mythic-leaderboard/14/
 GET /wow/advanced/mythic-leaderboard/14/?region=us
+GET /wow/advanced/mythic-leaderboard/14/?fromPeriod=1018&toPeriod=1020
+GET /wow/advanced/mythic-leaderboard/14/?region=us&fromPeriod=1018
 ```
 
 **Response:**
@@ -210,7 +214,12 @@ GET /wow/advanced/mythic-leaderboard/14/?region=us
   "failedCount": 0,
   "failedReasons": [],
   "regionsProcessed": ["us", "eu", "kr", "tw"],
-  "regionsCount": 4
+  "regionsCount": 4,
+  "periodFilter": {
+    "fromPeriod": 1018,
+    "toPeriod": 1020,
+    "applied": true
+  }
 }
 ```
 
