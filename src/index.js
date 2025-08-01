@@ -11,6 +11,7 @@ const errorHandler = require('./middleware/error-handler');
 const rateLimit = require('./middleware/rate-limit');
 const { populateDungeons, populateSeasons, populatePeriods, populateRealms } = require('./routes/admin');
 const metaRoutes = require('./routes/meta');
+const aiRoutes = require('./routes/ai');
 const { pool } = require('./services/db'); // <-- Import the pool
 
 const app = express();
@@ -20,9 +21,9 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 app.use(cors());
 
-// Body parsing middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body parsing middleware with increased limits for AI analysis
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Rate limiting (disabled in development)
 if (process.env.NODE_ENV !== 'development') {
@@ -67,6 +68,7 @@ app.use('/wow', wowRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 app.use('/meta', metaRoutes);
+app.use('/ai', aiRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
