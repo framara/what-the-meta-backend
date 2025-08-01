@@ -56,6 +56,7 @@ async function getSpecEvolutionForSeason(season_id) {
 // POST /ai/predictions
 // Send data to OpenAI for AI-powered meta predictions
 router.post('/predictions', async (req, res) => {
+  console.log(`🤖 [AI] POST /ai/predictions - Season: ${req.body.seasonId || 'unknown'}`);
   try {
     const { seasonData, specEvolution, dungeons, seasonId } = req.body;
 
@@ -415,6 +416,7 @@ IMPORTANT:
 // GET /ai/analysis/:season_id
 // Get cached AI analysis for a season
 router.get('/analysis/:season_id', async (req, res) => {
+  console.log(`🤖 [AI] GET /ai/analysis/${req.params.season_id}`);
   try {
     const season_id = Number(req.params.season_id);
     

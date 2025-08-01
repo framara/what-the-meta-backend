@@ -4,6 +4,7 @@ const { getUserTokenFromCode } = require('../services/blizzard/auth');
 
 // Endpoint para redirigir al login de Blizzard con el scope wow.profile
 router.get('/blizzard/login', (req, res) => {
+  console.log(`🔑 [AUTH] GET /auth/blizzard/login`);
   const clientId = process.env.BLIZZARD_CLIENT_ID;
   const redirectUri = encodeURIComponent(process.env.BLIZZARD_REDIRECT_URI);
   const scope = encodeURIComponent('wow.profile');
@@ -14,6 +15,7 @@ router.get('/blizzard/login', (req, res) => {
 
 // Endpoint de callback para recibir el code y obtener el user access token
 router.get('/blizzard/callback', async (req, res) => {
+  console.log(`🔑 [AUTH] GET /auth/blizzard/callback`);
   const { code } = req.query;
   if (!code) return res.status(400).send('Missing code');
   try {

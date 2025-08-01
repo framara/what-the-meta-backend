@@ -20,6 +20,7 @@ router.use(adminAuthMiddleware);
 
 // Test endpoint for admin authentication
 router.get('/test', (req, res) => {
+  console.log(`🔐 [ADMIN] GET /admin/test`);
   res.json({
     success: true,
     message: 'Admin authentication successful',
@@ -192,6 +193,7 @@ function dedupeRunGroupMembers(members) {
 }
 // --- HTTP ENDPOINTS ---
 router.post('/populate-dungeons', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-dungeons`);
   try {
     const result = await populateDungeons();
     res.json(result);
@@ -201,6 +203,7 @@ router.post('/populate-dungeons', async (req, res) => {
 });
 
 router.post('/populate-seasons', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-seasons`);
   try {
     const result = await populateSeasons();
     res.json(result);
@@ -210,6 +213,7 @@ router.post('/populate-seasons', async (req, res) => {
 });
 
 router.post('/populate-periods', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-periods`);
   try {
     const result = await populatePeriods();
     res.json(result);
@@ -219,6 +223,7 @@ router.post('/populate-periods', async (req, res) => {
 });
 
 router.post('/populate-realms', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-realms`);
   try {
     const result = await populateRealms();
     res.json(result);
@@ -237,6 +242,7 @@ function printFileImportProgress(current, total) {
 }
 // --- Admin import all endpoint ---
 router.post('/import-all-leaderboard-json', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/import-all-leaderboard-json`);
   try {
     const outputDir = path.join(__dirname, '../output');
     if (!fs.existsSync(outputDir)) {

@@ -81,6 +81,7 @@ async function getSpecEvolutionForSeason(season_id) {
 // If period_id or dungeon_id is provided, query the per-group view (top_100_keys_per_group)
 // Supports: season_id (required), period_id (optional), dungeon_id (optional), limit (default 100, max 500), offset (default 0)
 router.get('/top-keys', async (req, res) => {
+  console.log(`📊 [META] GET /meta/top-keys - Season: ${req.query.season_id || 'unknown'}, Period: ${req.query.period_id || 'none'}, Dungeon: ${req.query.dungeon_id || 'none'}`);
   const { season_id, period_id, dungeon_id } = req.query;
   const limit = Math.min(Number(req.query.limit) || 100, 1000);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
@@ -123,6 +124,7 @@ router.get('/top-keys', async (req, res) => {
 // Retrieves top 1000 keys for each period in a given season
 // Returns comprehensive data over time for AI analysis
 router.get('/season-data/:season_id', async (req, res) => {
+  console.log(`📊 [META] GET /meta/season-data/${req.params.season_id}`);
   const season_id = Number(req.params.season_id);
   if (!season_id) {
     return res.status(400).json({ error: 'season_id is required' });
@@ -175,6 +177,7 @@ router.get('/season-data/:season_id', async (req, res) => {
 // GET /meta/spec-evolution
 // Aggregates spec evolution data from all seasons that have data
 router.get('/spec-evolution', async (req, res) => {
+  console.log(`📊 [META] GET /meta/spec-evolution`);
   try {
     // Get all seasons that have data
     const seasonsResult = await db.pool.query(
@@ -225,6 +228,7 @@ router.get('/spec-evolution', async (req, res) => {
 
 // GET /meta/spec-evolution/:season_id
 router.get('/spec-evolution/:season_id', async (req, res) => {
+  console.log(`📊 [META] GET /meta/spec-evolution/${req.params.season_id}`);
   const season_id = Number(req.params.season_id);
   if (!season_id) {
     return res.status(400).json({ error: 'season_id is required' });

@@ -106,6 +106,7 @@ async function fetchWithRetry(fn, maxRetries = 5, delayMs = 1000) {
 
 // /advanced/mythic-leaderboard/index
 router.get('/mythic-leaderboard/index', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/index - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
@@ -130,6 +131,7 @@ router.get('/mythic-leaderboard/index', async (req, res, next) => {
 
 // /advanced/mythic-leaderboard/:dungeonId/period/:period
 router.get('/mythic-leaderboard/:dungeonId/period/:period', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.dungeonId}/period/${req.params.period} - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { dungeonId, period } = req.params;
@@ -161,6 +163,7 @@ router.get('/mythic-leaderboard/:dungeonId/period/:period', async (req, res, nex
 
 // /advanced/mythic-keystone-season/:seasonId/dungeons
 router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-keystone-season/${req.params.seasonId}/dungeons - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { seasonId } = req.params;
@@ -222,6 +225,7 @@ router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) 
 
 // /advanced/mythic-keystone-season/:seasonId/name
 router.get('/mythic-keystone-season/:seasonId/name', async (req, res) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-keystone-season/${req.params.seasonId}/name`);
   const { seasonId } = req.params;
   const name = SEASON_NAMES[seasonId] || null;
   if (name) {
@@ -233,6 +237,7 @@ router.get('/mythic-keystone-season/:seasonId/name', async (req, res) => {
 
 // /advanced/mythic-leaderboard/:seasonId/
 router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.seasonId}/ - Region: ${req.region || 'unknown'}`);
   try {
     // Check if region is specified in query params
     const specifiedRegion = req.query.region;
@@ -401,6 +406,7 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
 
 // /advanced/mythic-leaderboard/:seasonId/:periodId
 router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.seasonId}/${req.params.periodId} - Region: ${req.region || 'unknown'}`);
   try {
     // Check if region is specified in query params
     const specifiedRegion = req.query.region;
@@ -527,6 +533,7 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
 
 // /advanced/seasons
 router.get('/seasons', (req, res) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/seasons`);
   // SEASON_NAMES is an object: { [seasonId]: seasonName }
   const seasons = Object.entries(SEASON_NAMES).map(([season_id, season_name]) => ({
     season_id: Number(season_id),
@@ -537,6 +544,7 @@ router.get('/seasons', (req, res) => {
 
 // /advanced/season-info/:seasonId
 router.get('/season-info/:seasonId', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/season-info/${req.params.seasonId} - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { seasonId } = req.params;
