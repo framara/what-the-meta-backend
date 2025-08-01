@@ -120,6 +120,71 @@ router.get('/top-keys', async (req, res) => {
   }
 });
 
+// GET /meta/top-keys-all-seasons
+// Aggregates top keys data from all seasons
+// Returns data for each season with their top 100 keys
+router.get('/top-keys-all-seasons', async (req, res) => {
+  console.log(`📊 [META] GET /meta/top-keys-all-seasons`);
+  
+  try {
+    // Get all seasons that have data
+    const seasonsResult = await db.pool.query(
+      'SELECT DISTINCT season_id FROM period ORDER BY season_id',
+      []
+    );
+    const seasonIds = seasonsResult.rows.map(row => row.season_id);
+
+    if (seasonIds.length === 0) {
+      return res.status(404).json({ error: 'No seasons found with data' });
+    }
+    
+    const aggregatedData = [];
+    
+    // For each season, get top 100 keys
+    for (const seasonId of seasonIds) {
+      try {
+        // Query the global view for each season (top 100 keys)
+        const { rows } = await db.pool.query(
+          'SELECT * FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT 100',
+          [seasonId]
+        );
+        
+        // Get season metadata
+        const seasonMetadata = SEASON_METADATA[seasonId];
+        
+        // Only include seasons that have data
+        if (rows.length > 0) {
+          aggregatedData.push({
+            season_id: seasonId,
+            season_name: seasonMetadata?.name || `Season ${seasonId}`,
+            expansion: seasonMetadata?.expansion || 'Unknown',
+            patch: seasonMetadata?.patch || 'Unknown',
+            keys_count: rows.length,
+            data: rows
+          });
+        }
+      } catch (seasonError) {
+        console.error(`[TOP KEYS ALL SEASONS ERROR] Error processing season ${seasonId}:`, seasonError);
+        // Continue with other seasons even if one fails
+      }
+    }
+    
+    // Calculate summary statistics
+    const totalSeasons = aggregatedData.length;
+    const totalKeys = aggregatedData.reduce((sum, season) => sum + season.keys_count, 0);
+    
+    res.json({
+      total_seasons: totalSeasons,
+      total_keys: totalKeys,
+      seasons: aggregatedData
+    });
+    
+  } catch (err) {
+    console.error('[TOP KEYS ALL SEASONS ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /meta/season-data/:season_id
 // Retrieves top 1000 keys for each period in a given season
 // Returns comprehensive data over time for AI analysis

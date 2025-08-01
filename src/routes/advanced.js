@@ -404,6 +404,165 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
   }
 });
 
+// /advanced/mythic-leaderboard-retry
+// POST endpoint to retry failed requests based on failedReasons array
+router.post('/mythic-leaderboard-retry', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] POST /advanced/mythic-leaderboard-retry`);
+  
+  try {
+    const { failedReasons } = req.body;
+    
+    if (!failedReasons || !Array.isArray(failedReasons)) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'failedReasons array is required in request body' 
+      });
+    }
+
+    let retryCount = 0;
+    let successCount = 0;
+    let failedCount = 0;
+    let failedReasonsNew = [];
+    let allFiles = [];
+
+    // Parse each failed reason to extract the parameters
+    for (const reason of failedReasons) {
+      try {
+        // Parse the error message format: "API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded"
+        const match = reason.match(/API Error for ([a-z]+)-(\d+)-(\d+)-(\d+):/);
+        
+        if (!match) {
+          console.error(`[PARSE ERROR] Could not parse failed reason: ${reason}`);
+          failedCount++;
+          failedReasonsNew.push(`Parse error for: ${reason}`);
+          continue;
+        }
+
+        const [, region, dungeonId, periodId, connectedRealmId] = match;
+        retryCount++;
+
+        console.log(`🔄 [RETRY] Retrying ${region}-${dungeonId}-${periodId}-${connectedRealmId}`);
+
+        try {
+          // Try to determine season from period ID by checking all seasons
+          let seasonId = null;
+          
+          // Check each season to see which one contains this period
+          for (const [seasonKey, dungeons] of Object.entries(SEASON_DUNGEONS)) {
+            const seasonNum = parseInt(seasonKey, 10);
+            try {
+              // Try to get the season data to see if this period belongs to it
+              const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { id: seasonNum });
+              const periodsRaw = seasonResp.data.periods || [];
+              const periods = periodsRaw.map(p => {
+                const href = p && p.key && p.key.href;
+                if (href) {
+                  const match = href.match(/period\/(\d+)/);
+                  return match ? match[1] : null;
+                }
+                return null;
+              }).filter(Boolean);
+              
+              if (periods.includes(periodId)) {
+                seasonId = seasonNum;
+                break;
+              }
+            } catch (seasonError) {
+              // Continue to next season if this one fails
+              continue;
+            }
+          }
+          
+          // If we couldn't determine season, use a fallback based on period ID ranges
+          if (!seasonId) {
+            const periodNum = parseInt(periodId, 10);
+            if (periodNum >= 700 && periodNum <= 800) seasonId = 1; // BFA
+            else if (periodNum >= 800 && periodNum <= 900) seasonId = 5; // SL
+            else if (periodNum >= 900 && periodNum <= 1000) seasonId = 9; // DF
+            else if (periodNum >= 1000) seasonId = 13; // TWW
+            else seasonId = 1; // Default fallback
+          }
+
+          const lb = await proxyService.getGameData('mythic-leaderboard', region, { 
+            connectedRealmId, 
+            dungeonId, 
+            periodId 
+          });
+
+          if (lb.data && Array.isArray(lb.data.leading_groups)) {
+            const runs = [];
+            for (const group of lb.data.leading_groups) {
+              const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+              const groupKey = memberIds.join('-');
+              const run_guid = uuidv4();
+              
+              runs.push({
+                dungeon_id: parseInt(dungeonId, 10),
+                period_id: parseInt(periodId, 10),
+                realm_id: parseInt(connectedRealmId, 10),
+                season_id: seasonId,
+                region,
+                completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                duration_ms: group.duration,
+                keystone_level: group.keystone_level,
+                score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
+                  ? group.mythic_rating.rating
+                  : (() => {
+                      const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                      return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                    })(),
+                rank: group.ranking,
+                run_guid,
+                members: group.members.map(member => {
+                  const specId = member.specialization ? member.specialization.id : null;
+                  return {
+                    character_name: member.profile.name,
+                    class_id: getClassIdFromSpecId(specId),
+                    spec_id: specId,
+                    role: getRoleFromSpecId(specId),
+                    run_guid
+                  };
+                })
+              });
+            }
+
+            const outputDir = ensureOutputDir();
+            const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+            const filePath = path.join(outputDir, fileName);
+            fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+            allFiles.push(fileName);
+            successCount++;
+            console.log(`✅ [SUCCESS] Retry successful for ${fileName}`);
+          }
+        } catch (retryError) {
+          console.error(`[RETRY ERROR] Failed to retry ${region}-${dungeonId}-${periodId}-${connectedRealmId}:`, retryError.message);
+          failedCount++;
+          failedReasonsNew.push(`Retry failed for ${region}-${dungeonId}-${periodId}-${connectedRealmId}: ${retryError.message}`);
+        }
+      } catch (parseError) {
+        console.error(`[PARSE ERROR] Error processing failed reason: ${reason}`, parseError);
+        failedCount++;
+        failedReasonsNew.push(`Parse error for: ${reason}`);
+      }
+    }
+
+    res.json({
+      status: failedCount === 0 ? 'OK' : 'PARTIAL',
+      message: 'Retry operation completed',
+      retryAttempted: retryCount,
+      retrySucceeded: successCount,
+      retryFailed: failedCount,
+      filesWritten: successCount,
+      failedReasons: failedReasonsNew,
+      retriedFiles: allFiles
+    });
+
+  } catch (error) {
+    console.error('[MYTHIC LEADERBOARD RETRY ERROR]', error);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
 // /advanced/mythic-leaderboard/:seasonId/:periodId
 router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => {
   console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.seasonId}/${req.params.periodId} - Region: ${req.region || 'unknown'}`);

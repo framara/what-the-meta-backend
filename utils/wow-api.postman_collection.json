@@ -61,7 +61,23 @@
         { "name": "Mythic Keystone Season Dungeons", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/dungeons?region={{region}}" } },
         { "name": "Mythic Keystone Season Name", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/name?region={{region}}" } },
         { "name": "Seasons (All)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/seasons" } },
-        { "name": "Season Info", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/season-info/{{seasonId}}" } }
+        { "name": "Season Info", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/season-info/{{seasonId}}" } },
+        { 
+          "name": "Mythic Leaderboard Retry", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"failedReasons\": [\n    \"API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded\",\n    \"API Error for us-249-711-1168: No response received for endpoint /data/wow/connected-realm/1168/mythic-leaderboard/249/period/711 in region us: timeout of 10000ms exceeded\"\n  ]\n}",
+              "description": "Retry failed mythic leaderboard requests. Paste the failedReasons array from a previous mythic-leaderboard request response."
+            },
+            "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard-retry",
+            "description": "POST endpoint to retry failed requests based on failedReasons array. Parses each failed reason to extract region, dungeonId, periodId, and connectedRealmId, then retries the API calls and creates JSON files."
+          } 
+        }
       ]
     },
     {
@@ -71,6 +87,7 @@
         { "name": "Top Keys (Period)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&limit=100" } },
         { "name": "Top Keys (Dungeon)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&dungeon_id={{dungeonId}}&limit=100" } },
         { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } },
+        { "name": "Top Keys (All Seasons)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys-all-seasons", "description": "Aggregates top keys data from all seasons. Returns data for each season with their top 100 keys. No parameters required." } },
         { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } },
         { "name": "Season Data (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/season-data/{{seasonId}}" } }
       ]

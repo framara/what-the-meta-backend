@@ -845,6 +845,175 @@ Trigger only the refresh views step.
 
 ---
 
+## New Endpoints (Latest Additions)
+
+### 1. `/meta/top-keys-all-seasons` - GET
+
+**Description:** Aggregates top keys data from all seasons that have data in the database.
+
+**Endpoint:** `GET /meta/top-keys-all-seasons`
+
+**Parameters:** None required
+
+**Response Format:**
+```json
+{
+  "total_seasons": 14,
+  "total_keys": 1400,
+  "seasons": [
+    {
+      "season_id": 1,
+      "season_name": "BFA S1",
+      "expansion": "Battle for Azeroth",
+      "patch": "8.0",
+      "keys_count": 100,
+      "data": [
+        {
+          "id": "...",
+          "season_id": 1,
+          "keystone_level": 25,
+          "score": 2500,
+          "members": [...],
+          "dungeon_id": 247,
+          "period_id": 716,
+          "realm_id": 1072,
+          "region": "us",
+          "completed_at": "2024-01-15T10:30:00Z",
+          "duration_ms": 1800000,
+          "rank": 1,
+          "run_guid": "uuid-here"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Features:**
+- Automatically detects all seasons with data from the database
+- Returns top 100 keys for each season
+- Includes season metadata (name, expansion, patch)
+- Provides summary statistics (total seasons, total keys)
+- Only includes seasons that actually have data
+
+**Usage Example:**
+```bash
+curl -X GET "http://localhost:3000/meta/top-keys-all-seasons"
+```
+
+---
+
+### 2. `/advanced/mythic-leaderboard-retry` - POST
+
+**Description:** Retries failed mythic leaderboard requests by parsing the `failedReasons` array from a previous request.
+
+**Endpoint:** `POST /advanced/mythic-leaderboard-retry`
+
+**Request Body:**
+```json
+{
+  "failedReasons": [
+    "API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded",
+    "API Error for us-249-711-1168: No response received for endpoint /data/wow/connected-realm/1168/mythic-leaderboard/249/period/711 in region us: timeout of 10000ms exceeded"
+  ]
+}
+```
+
+**Response Format:**
+```json
+{
+  "status": "PARTIAL",
+  "message": "Retry operation completed",
+  "retryAttempted": 15,
+  "retrySucceeded": 12,
+  "retryFailed": 3,
+  "filesWritten": 12,
+  "failedReasons": [
+    "Retry failed for us-251-713-58: timeout of 10000ms exceeded",
+    "Retry failed for us-251-713-1184: timeout of 10000ms exceeded",
+    "Retry failed for us-251-713-84: timeout of 10000ms exceeded"
+  ],
+  "retriedFiles": [
+    "us-s1-p716-d247-r1072.json",
+    "us-s1-p711-d249-r1168.json"
+  ]
+}
+```
+
+**Features:**
+- **Smart parsing:** Extracts region, dungeonId, periodId, and connectedRealmId from error messages
+- **Season detection:** Automatically determines the correct season for each period
+- **Fallback logic:** Uses period ID ranges if season detection fails
+- **Error handling:** Continues processing even if some retries fail
+- **File creation:** Creates the same JSON files as the original endpoint
+- **Detailed logging:** Shows progress and results for each retry
+
+**Error Message Format:**
+The endpoint expects failed reasons in this format:
+```
+API Error for {region}-{dungeonId}-{periodId}-{connectedRealmId}: {error message}
+```
+
+**Season Detection Logic:**
+1. Checks all seasons to find which one contains the period
+2. Falls back to period ID ranges:
+   - Periods 700-800: Season 1 (BFA)
+   - Periods 800-900: Season 5 (SL)
+   - Periods 900-1000: Season 9 (DF)
+   - Periods 1000+: Season 13 (TWW)
+
+**Usage Example:**
+```bash
+curl -X POST "http://localhost:3000/advanced/mythic-leaderboard-retry" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "failedReasons": [
+      "API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded"
+    ]
+  }'
+```
+
+**Workflow:**
+1. Run a mythic leaderboard request (e.g., `/advanced/mythic-leaderboard/14/`)
+2. If it returns `"status": "PARTIAL"` with `failedReasons`
+3. Copy the `failedReasons` array from the response
+4. Send it to this retry endpoint
+5. The endpoint will retry only the failed requests and create the missing JSON files
+
+---
+
+## Postman Collection Updates
+
+Both endpoints have been added to the Postman collection:
+
+1. **Top Keys (All Seasons)** - Added to the "Meta" section
+2. **Mythic Leaderboard Retry** - Added to the "Advanced" section with example request body
+
+The Postman collection includes:
+- Proper request methods (GET/POST)
+- Example request bodies for the POST endpoint
+- Descriptions explaining the functionality
+- Headers and content types where needed
+
+---
+
+## Integration Notes
+
+### For `/meta/top-keys-all-seasons`:
+- Useful for analyzing trends across multiple seasons
+- Can be used to compare spec popularity across expansions
+- Provides comprehensive data for AI analysis across all available seasons
+
+### For `/advanced/mythic-leaderboard-retry`:
+- Significantly reduces manual retry work
+- Maintains the same file structure as original requests
+- Handles region-specific retries automatically
+- Useful for large data collection jobs that may have intermittent failures
+
+Both endpoints follow the existing API patterns and error handling conventions used throughout the codebase.
+
+---
+
 ## ⚠️ Error Handling
 
 ### Standard HTTP Status Codes
