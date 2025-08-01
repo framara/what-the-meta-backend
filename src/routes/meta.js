@@ -143,9 +143,9 @@ router.get('/top-keys-all-seasons', async (req, res) => {
     // For each season, get top 100 keys
     for (const seasonId of seasonIds) {
       try {
-        // Query the global view for each season (top 100 keys)
+        // Query the global view for each season (top 1000 keys)
         const { rows } = await db.pool.query(
-          'SELECT * FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT 100',
+          'SELECT * FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
           [seasonId]
         );
         
