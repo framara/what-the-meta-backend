@@ -35,14 +35,21 @@ function errorHandler(err, req, res, next) {
     message = err.message;
   }
 
+  // Sanitize error message for production
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const sanitizedMessage = isDevelopment ? message : 'An error occurred';
+
   // Send error response
   res.status(statusCode).json({
     error: true,
-    message: message,
+    message: sanitizedMessage,
     timestamp: new Date().toISOString(),
     path: req.originalUrl,
     method: req.method,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    ...(isDevelopment && { 
+      stack: err.stack,
+      originalMessage: message 
+    })
   });
 }
 

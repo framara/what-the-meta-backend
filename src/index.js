@@ -19,7 +19,16 @@ const PORT = process.env.PORT || 3000;
 
 // Security middleware
 app.use(helmet());
-app.use(cors());
+
+// CORS configuration with specific origins
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.FRONTEND_URL, process.env.ALLOWED_ORIGINS?.split(',')].flat().filter(Boolean)
+    : true, // Allow all origins in development
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 
 // Body parsing middleware with increased limits for AI analysis
 app.use(express.json({ limit: '50mb' }));
@@ -38,26 +47,16 @@ app.get('/health', async (req, res) => {
       status: 'OK', 
       timestamp: new Date().toISOString(),
       service: 'WoW API Proxy',
-      db: {
-        host: process.env.PGHOST,
-        database: process.env.PGDATABASE,
-        user: process.env.PGUSER,
-        ssl: process.env.PGSSLMODE === 'require'
-      },
-      dbConnection: 'connected'
+      dbConnection: 'connected',
+      environment: process.env.NODE_ENV || 'development'
     });
   } catch (err) {
     res.status(500).json({
       status: 'ERROR',
       message: 'Database connection failed',
-      error: err.message,
-      db: {
-        host: process.env.PGHOST,
-        database: process.env.PGDATABASE,
-        user: process.env.PGUSER,
-        ssl: process.env.PGSSLMODE === 'require'
-      },
-      dbConnection: 'failed'
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+      dbConnection: 'failed',
+      environment: process.env.NODE_ENV || 'development'
     });
   }
 });
@@ -85,12 +84,8 @@ async function startServer() {
   try {
     // Test DB connection before starting
     await pool.query('SELECT 1');
-    console.log('✅ Connected to PostgreSQL DB:', {
-      host: process.env.PGHOST,
-      database: process.env.PGDATABASE,
-      user: process.env.PGUSER,
-      ssl: process.env.PGSSLMODE === 'require'
-    });
+    console.log('✅ Connected to PostgreSQL DB');
+    console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
 
     console.log('Populating dungeons...');
     const dungeonsResult = await populateDungeons();
