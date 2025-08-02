@@ -4,6 +4,68 @@ const { SEASON_METADATA, EXPANSION_METADATA } = require('../config/constants');
 
 const router = express.Router();
 
+/**
+ * META ENDPOINTS DOCUMENTATION
+ * 
+ * This file contains all meta-related endpoints for the WoW Mythic+ API.
+ * Below is a comprehensive list of endpoints and their frontend usage:
+ * 
+ * 1. GET /meta/top-keys
+ *    - Purpose: Retrieves top keys with optional filtering by period/dungeon
+ *    - Frontend Usage:
+ *      * App.tsx (Home page) - Main leaderboard display with SummaryStats and LeaderboardTable
+ *      * GroupCompositionPage - For group composition analysis
+ *    - Parameters: season_id (required), period_id (optional), dungeon_id (optional), limit, offset
+ *    - Returns: Array of run objects with id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members
+ * 
+ * 2. GET /meta/top-keys-all-seasons
+ *    - Purpose: Retrieves top keys from all seasons for historical analysis
+ *    - Frontend Usage:
+ *      * CompAllSeasonsPage - Historical compositions across all seasons
+ *    - Parameters: period_id (optional), dungeon_id (optional), limit, offset
+ *    - Returns: Object with total_seasons, total_keys, and seasons array
+ * 
+ * 3. GET /meta/season-data/:season_id
+ *    - Purpose: Retrieves comprehensive season data organized by periods for AI analysis
+ *    - Frontend Usage:
+ *      * AIPredictionsPage - AI-powered predictions and meta analysis
+ *      * GroupCompositionPage - Detailed group composition analysis
+ *    - Parameters: season_id (path parameter)
+ *    - Returns: Object with season_id, total_periods, total_keys, and periods array
+ * 
+ * 4. GET /meta/spec-evolution
+ *    - Purpose: Retrieves spec evolution data across all seasons
+ *    - Frontend Usage:
+ *      * MetaEvolutionPage - Meta evolution charts and trends
+ *    - Parameters: None
+ *    - Returns: Array of season evolution data
+ * 
+ * 5. GET /meta/spec-evolution/:season_id
+ *    - Purpose: Retrieves spec evolution data for a specific season
+ *    - Frontend Usage:
+ *      * AIPredictionsPage - AI analysis with spec evolution data
+ *      * MetaEvolutionPage - Meta evolution charts for specific season
+ *    - Parameters: season_id (path parameter)
+ *    - Returns: Object with season_id, expansion info, and evolution array
+ * 
+ * OPTIMIZATION NOTES:
+ * - All queries have been optimized to only select necessary fields
+ * - Removed unused fields: run_guid, region, realm_id, period_id, rn
+ * - Kept essential fields: id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members
+ * - character_name removed from members JSON for endpoints that don't need it:
+ *   * /meta/top-keys-all-seasons (CompAllSeasonsPage)
+ *   * /meta/spec-evolution (MetaEvolutionPage)
+ *   * /meta/spec-evolution/:season_id (AIPredictionsPage, MetaEvolutionPage)
+ * - character_name kept for endpoints that need it:
+ *   * /meta/top-keys (LeaderboardTable tooltips)
+ * - character_name removed from endpoints that don't need it:
+ *   * /meta/top-keys-all-seasons (CompAllSeasonsPage)
+ *   * /meta/composition-data/:season_id (GroupCompositionPage, AIPredictionsPage - optimized endpoint)
+ *   * /meta/spec-evolution (MetaEvolutionPage)
+ *   * /meta/spec-evolution/:season_id (AIPredictionsPage, MetaEvolutionPage)
+ * - /meta/season-data/:season_id endpoint has been removed (no longer used)
+ */
+
 // Helper function to get spec evolution data for a specific season
 async function getSpecEvolutionForSeason(season_id) {
   // Get all periods for the season
@@ -76,9 +138,10 @@ async function getSpecEvolutionForSeason(season_id) {
 }
 
 // GET /meta/top-keys
-// If only season_id is provided, query the global view (top_100_keys_global)
-// If season_id and period_id are provided (no dungeon_id), query the per-period view (top_100_keys_per_period)
-// If period_id or dungeon_id is provided, query the per-group view (top_100_keys_per_group)
+// Purpose: Retrieves top keys with optional filtering by period/dungeon
+// Frontend Usage: 
+//   - App.tsx (Home page) - Main leaderboard display with SummaryStats and LeaderboardTable
+//   - GroupCompositionPage - For group composition analysis
 // Supports: season_id (required), period_id (optional), dungeon_id (optional), limit (default 100, max 500), offset (default 0)
 router.get('/top-keys', async (req, res) => {
   console.log(`📊 [META] GET /meta/top-keys - Season: ${req.query.season_id || 'unknown'}, Period: ${req.query.period_id || 'none'}, Dungeon: ${req.query.dungeon_id || 'none'}`);
@@ -92,15 +155,15 @@ router.get('/top-keys', async (req, res) => {
   if (!period_id && !dungeon_id) {
     // Use global view
     params = [season_id, limit, offset];
-    sql = `SELECT * FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT $2 OFFSET $3;`;
+    sql = `SELECT id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT $2 OFFSET $3;`;
   } else if (period_id && !dungeon_id) {
     // Use per-period view
     params = [season_id, period_id, limit, offset];
-    sql = `SELECT * FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
+    sql = `SELECT id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
   } else if (dungeon_id && !period_id) {
     // Use per-dungeon view
     params = [season_id, dungeon_id, limit, offset];
-    sql = `SELECT * FROM top_keys_per_dungeon WHERE season_id = $1 AND dungeon_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
+    sql = `SELECT id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members FROM top_keys_per_dungeon WHERE season_id = $1 AND dungeon_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT $3 OFFSET $4;`;
   } else {
     // Use per-group view
     let where = ['season_id = $1'];
@@ -109,7 +172,7 @@ router.get('/top-keys', async (req, res) => {
     if (period_id) { where.push(`period_id = $${idx}`); params.push(period_id); idx++; }
     if (dungeon_id) { where.push(`dungeon_id = $${idx}`); params.push(dungeon_id); idx++; }
     params.push(limit, offset);
-    sql = `SELECT * FROM top_keys_per_group WHERE ${where.join(' AND ')} ORDER BY season_id${period_id ? ', period_id' : ''}, dungeon_id, keystone_level DESC, score DESC LIMIT $${idx} OFFSET $${idx+1};`;
+    sql = `SELECT id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members FROM top_keys_per_group WHERE ${where.join(' AND ')} ORDER BY season_id${period_id ? ', period_id' : ''}, dungeon_id, keystone_level DESC, score DESC LIMIT $${idx} OFFSET $${idx+1};`;
   }
   try {
     const { rows } = await db.pool.query(sql, params);
@@ -121,8 +184,10 @@ router.get('/top-keys', async (req, res) => {
 });
 
 // GET /meta/top-keys-all-seasons
-// Aggregates top keys data from all seasons
-// Returns data for each season with their top 100 keys
+// Purpose: Retrieves top keys from all seasons for historical analysis
+// Frontend Usage:
+//   - CompAllSeasonsPage - Historical compositions across all seasons
+// Returns data for each season with their top 1000 keys
 router.get('/top-keys-all-seasons', async (req, res) => {
   console.log(`📊 [META] GET /meta/top-keys-all-seasons`);
   
@@ -143,9 +208,9 @@ router.get('/top-keys-all-seasons', async (req, res) => {
     // For each season, get top 100 keys
     for (const seasonId of seasonIds) {
       try {
-        // Query the global view for each season (top 1000 keys)
+        // Query the global view for each season (top 1000 keys) - optimized to only select needed fields
         const { rows } = await db.pool.query(
-          'SELECT * FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
+          'SELECT id, keystone_level, (SELECT json_agg(json_build_object(\'class_id\', m->>\'class_id\', \'spec_id\', m->>\'spec_id\', \'role\', m->>\'role\')) FROM json_array_elements(members) AS m) AS members FROM top_keys_global WHERE season_id = $1 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
           [seasonId]
         );
         
@@ -185,11 +250,13 @@ router.get('/top-keys-all-seasons', async (req, res) => {
   }
 });
 
-// GET /meta/season-data/:season_id
-// Retrieves top 1000 keys for each period in a given season
-// Returns comprehensive data over time for AI analysis
-router.get('/season-data/:season_id', async (req, res) => {
-  console.log(`📊 [META] GET /meta/season-data/${req.params.season_id}`);
+// GET /meta/composition-data/:season_id
+// Purpose: Retrieves data optimized for group composition analysis (no character names)
+// Frontend Usage:
+//   - GroupCompositionPage - Group composition analysis
+// Returns data optimized for composition analysis
+router.get('/composition-data/:season_id', async (req, res) => {
+  console.log(`📊 [META] GET /meta/composition-data/${req.params.season_id}`);
   const season_id = Number(req.params.season_id);
   if (!season_id) {
     return res.status(400).json({ error: 'season_id is required' });
@@ -207,11 +274,11 @@ router.get('/season-data/:season_id', async (req, res) => {
       return res.status(404).json({ error: 'No periods found for this season' });
     }
 
-    // Get top 1000 keys for each period
+    // Get top 1000 keys for each period (optimized - no character names)
     const seasonData = [];
     for (const period of periods) {
       const keysResult = await db.pool.query(
-        'SELECT * FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
+        'SELECT id, keystone_level, score, (SELECT json_agg(json_build_object(\'class_id\', m->>\'class_id\', \'spec_id\', m->>\'spec_id\', \'role\', m->>\'role\')) FROM json_array_elements(members) AS m) AS members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
         [season_id, period.id]
       );
 
@@ -234,13 +301,15 @@ router.get('/season-data/:season_id', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('[SEASON DATA ERROR]', err);
+    console.error('[COMPOSITION DATA ERROR]', err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET /meta/spec-evolution
-// Aggregates spec evolution data from all seasons that have data
+// Purpose: Retrieves spec evolution data across all seasons
+// Frontend Usage:
+//   - MetaEvolutionPage - Meta evolution charts and trends
 router.get('/spec-evolution', async (req, res) => {
   console.log(`📊 [META] GET /meta/spec-evolution`);
   try {
@@ -292,6 +361,10 @@ router.get('/spec-evolution', async (req, res) => {
 });
 
 // GET /meta/spec-evolution/:season_id
+// Purpose: Retrieves spec evolution data for a specific season
+// Frontend Usage:
+//   - AIPredictionsPage - AI analysis with spec evolution data
+//   - MetaEvolutionPage - Meta evolution charts for specific season
 router.get('/spec-evolution/:season_id', async (req, res) => {
   console.log(`📊 [META] GET /meta/spec-evolution/${req.params.season_id}`);
   const season_id = Number(req.params.season_id);

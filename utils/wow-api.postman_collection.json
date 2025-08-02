@@ -89,7 +89,7 @@
         { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } },
         { "name": "Top Keys (All Seasons)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys-all-seasons", "description": "Aggregates top keys data from all seasons. Returns data for each season with their top 100 keys. No parameters required." } },
         { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } },
-        { "name": "Season Data (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/season-data/{{seasonId}}" } }
+        { "name": "Composition Data (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/composition-data/{{seasonId}}", "description": "Optimized endpoint for group composition analysis. Returns data without character names to reduce payload size." } }
       ]
     },
     {
