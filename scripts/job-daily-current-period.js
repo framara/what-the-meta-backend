@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 // Configuration for Render DAILY Job
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
@@ -101,16 +99,10 @@ async function fetchLeaderboardData() {
       console.log(`[DAILY] Fetching data for region: ${region}`);
       const response = await makeRequest('GET', `/wow/advanced/mythic-leaderboard/${seasonId}/${periodId}?region=${region}`);
       
-      // Check if files were created in output directory
-      const outputDir = path.join(__dirname, '../src/output');
-      const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')) : [];
-      console.log(`[DAILY] After fetching ${region}: ${files.length} JSON files found in output directory`);
-      
       results.push({
         region,
         status: 'success',
-        data: response,
-        filesCreated: files.length
+        data: response
       });
       
       console.log(`[DAILY] Successfully fetched data for region ${region}`);
@@ -124,28 +116,12 @@ async function fetchLeaderboardData() {
     }
   }
   
-  // Final check of output directory
-  const outputDir = path.join(__dirname, '../src/output');
-  const totalFiles = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')).length : 0;
-  console.log(`[DAILY] Total JSON files in output directory after all regions: ${totalFiles}`);
-  
-  return { seasonId, periodId, results, totalFiles };
+  return { seasonId, periodId, results };
 }
 
 // Step 2: Import all leaderboard JSON files
 async function importLeaderboardData() {
   console.log('[DAILY] Starting import of leaderboard JSON files');
-  
-  // Check if files exist before attempting import
-  const outputDir = path.join(__dirname, '../src/output');
-  const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')) : [];
-  
-  if (files.length === 0) {
-    console.error('[DAILY ERROR] No JSON files found in output directory. Cannot proceed with import.');
-    throw new Error('No JSON files found in output directory');
-  }
-  
-  console.log(`[DAILY] Found ${files.length} JSON files to import`);
   
   try {
     const response = await makeRequest('POST', '/admin/import-all-leaderboard-json-fast');
@@ -222,17 +198,6 @@ async function runOneOffAutomation() {
     // Step 1: Fetch leaderboard data for all regions
     console.log('\n=== STEP 1: Fetching leaderboard data ===');
     const fetchResult = await fetchLeaderboardData();
-    
-    // Check if any files were created
-    if (fetchResult.totalFiles === 0) {
-      console.log('[DAILY WARNING] No JSON files were created during fetch step. This might indicate:');
-      console.log('[DAILY WARNING] - The season/period combination has no data yet');
-      console.log('[DAILY WARNING] - API rate limiting or timeouts occurred');
-      console.log('[DAILY WARNING] - Network issues with Blizzard API');
-      console.log('[DAILY WARNING] Proceeding with import step to see if it handles empty directory gracefully...');
-    } else {
-      console.log(`[DAILY] Successfully created ${fetchResult.totalFiles} JSON files`);
-    }
     
     // Step 2: Import all leaderboard JSON files
     console.log('\n=== STEP 2: Importing leaderboard data ===');
