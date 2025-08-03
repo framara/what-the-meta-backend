@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 // Configuration for Render WEEKLY Job
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
@@ -128,10 +130,16 @@ async function fetchLeaderboardData() {
       console.log(`[WEEKLY] Fetching data for region: ${region}`);
       const response = await makeRequest('GET', `/wow/advanced/mythic-leaderboard/${seasonId}/${periodId}?region=${region}`);
       
+      // Check if files were created in output directory
+      const outputDir = path.join(__dirname, '../src/output');
+      const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')) : [];
+      console.log(`[WEEKLY] After fetching ${region}: ${files.length} JSON files found in output directory`);
+      
       results.push({
         region,
         status: 'success',
-        data: response
+        data: response,
+        filesCreated: files.length
       });
       
       console.log(`[WEEKLY] Successfully fetched data for region ${region}`);
@@ -145,15 +153,31 @@ async function fetchLeaderboardData() {
     }
   }
   
-  return { seasonId, periodId, results };
+  // Final check of output directory
+  const outputDir = path.join(__dirname, '../src/output');
+  const totalFiles = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')).length : 0;
+  console.log(`[WEEKLY] Total JSON files in output directory after all regions: ${totalFiles}`);
+  
+  return { seasonId, periodId, results, totalFiles };
 }
 
 // Step 2: Import all leaderboard JSON files
 async function importLeaderboardData() {
   console.log('[WEEKLY] Starting import of leaderboard JSON files');
   
+  // Check if files exist before attempting import
+  const outputDir = path.join(__dirname, '../src/output');
+  const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir).filter(f => f.endsWith('.json')) : [];
+  
+  if (files.length === 0) {
+    console.error('[WEEKLY ERROR] No JSON files found in output directory. Cannot proceed with import.');
+    throw new Error('No JSON files found in output directory');
+  }
+  
+  console.log(`[WEEKLY] Found ${files.length} JSON files to import`);
+  
   try {
-    const response = await makeRequest('POST', '/admin/import-all-leaderboard-json');
+    const response = await makeRequest('POST', '/admin/import-all-leaderboard-json-fast');
     console.log('[WEEKLY] Successfully imported leaderboard data');
     return response;
   } catch (error) {
@@ -242,6 +266,17 @@ async function runPreviousPeriodAutomation() {
     // Step 1: Fetch leaderboard data for all regions
     console.log('\n=== STEP 1: Fetching leaderboard data ===');
     const fetchResult = await fetchLeaderboardData();
+    
+    // Check if any files were created
+    if (fetchResult.totalFiles === 0) {
+      console.log('[WEEKLY WARNING] No JSON files were created during fetch step. This might indicate:');
+      console.log('[WEEKLY WARNING] - The season/period combination has no data yet');
+      console.log('[WEEKLY WARNING] - API rate limiting or timeouts occurred');
+      console.log('[WEEKLY WARNING] - Network issues with Blizzard API');
+      console.log('[WEEKLY WARNING] Proceeding with import step to see if it handles empty directory gracefully...');
+    } else {
+      console.log(`[WEEKLY] Successfully created ${fetchResult.totalFiles} JSON files`);
+    }
     
     // Step 2: Import all leaderboard JSON files
     console.log('\n=== STEP 2: Importing leaderboard data ===');

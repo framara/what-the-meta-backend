@@ -361,10 +361,18 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
                     const outputDir = ensureOutputDir();
                     const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
                     const filePath = path.join(outputDir, fileName);
-                    fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+                    
+                    // Always create a file, even if empty, to track what was processed
+                    if (runs.length === 0) {
+                      console.log(`[EMPTY DATA] No runs found for ${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}`);
+                      fs.writeFileSync(filePath, JSON.stringify([], null, 2));
+                    } else {
+                      fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+                    }
+                    
                     allFiles.push(fileName);
                     fileCount++;
-                    printProgress(fileCount, totalFiles, `File: ${fileName}`);
+                    printProgress(fileCount, totalFiles, `File: ${fileName} (${runs.length} runs)`);
                   }
                 } catch (e) {
                   console.error(`[API ERROR] region=${region}, dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
