@@ -5,7 +5,44 @@ const { getAllRegions } = require('../config/regions');
 const fs = require('fs');
 const path = require('path');
 const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
-const pLimit = require('p-limit');
+
+// Try to import p-limit with error handling
+let pLimit;
+try {
+  const pLimitModule = require('p-limit');
+  pLimit = pLimitModule.default || pLimitModule;
+} catch (error) {
+  console.error('[ADMIN] Failed to import p-limit, using fallback:', error.message);
+  // Fallback implementation
+  pLimit = (concurrency) => {
+    const queue = [];
+    let active = 0;
+    
+    const next = () => {
+      if (queue.length === 0) return;
+      if (active >= concurrency) return;
+      
+      active++;
+      const { fn, resolve, reject } = queue.shift();
+      
+      Promise.resolve().then(fn)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    
+    return (fn) => {
+      return new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    };
+  };
+}
+
 const { pipeline } = require('stream');
 const { promisify } = require('util');
 const copyFrom = require('pg-copy-streams').from;
@@ -227,6 +264,48 @@ router.post('/populate-realms', async (req, res) => {
   try {
     const result = await populateRealms();
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/populate-all-parallel - Run all populate functions in parallel
+router.post('/populate-all-parallel', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-all-parallel`);
+  try {
+    const startTime = Date.now();
+    
+    // Run all populate functions in parallel
+    const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+      populateDungeons(),
+      populateSeasons(),
+      populatePeriods(),
+      populateRealms()
+    ]);
+
+    const duration = Date.now() - startTime;
+    
+    // Process results
+    const results = {
+      dungeons: dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : { status: 'ERROR', error: dungeonsResult.reason.message },
+      seasons: seasonsResult.status === 'fulfilled' ? seasonsResult.value : { status: 'ERROR', error: seasonsResult.reason.message },
+      periods: periodsResult.status === 'fulfilled' ? periodsResult.value : { status: 'ERROR', error: periodsResult.reason.message },
+      realms: realmsResult.status === 'fulfilled' ? realmsResult.value : { status: 'ERROR', error: realmsResult.reason.message }
+    };
+
+    // Count successes and failures
+    const successful = Object.values(results).filter(r => r.status === 'OK').length;
+    const failed = Object.values(results).filter(r => r.status === 'ERROR').length;
+
+    res.json({
+      status: failed === 0 ? 'OK' : 'PARTIAL',
+      message: `Parallel population completed in ${duration}ms`,
+      duration_ms: duration,
+      successful,
+      failed,
+      results
+    });
+
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }

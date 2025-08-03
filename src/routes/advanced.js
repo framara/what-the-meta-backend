@@ -48,7 +48,44 @@ function calculateFallbackScore(keystoneLevel, keystoneUpgrades, durationMs) {
 }
 const fs = require('fs');
 const path = require('path');
-const pLimit = require('p-limit');
+
+// Try to import p-limit with error handling
+let pLimit;
+try {
+  const pLimitModule = require('p-limit');
+  pLimit = pLimitModule.default || pLimitModule;
+} catch (error) {
+  console.error('[ADVANCED] Failed to import p-limit, using fallback:', error.message);
+  // Fallback implementation
+  pLimit = (concurrency) => {
+    const queue = [];
+    let active = 0;
+    
+    const next = () => {
+      if (queue.length === 0) return;
+      if (active >= concurrency) return;
+      
+      active++;
+      const { fn, resolve, reject } = queue.shift();
+      
+      Promise.resolve().then(fn)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    
+    return (fn) => {
+      return new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    };
+  };
+}
+
 const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();

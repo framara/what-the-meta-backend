@@ -87,22 +87,36 @@ async function startServer() {
     console.log('✅ Connected to PostgreSQL DB');
     console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
 
-    console.log('Populating dungeons...');
-    const dungeonsResult = await populateDungeons();
-    console.log('Dungeons:', dungeonsResult);
-    console.log('Populating seasons...');
-    const seasonsResult = await populateSeasons();
-    console.log('Seasons:', seasonsResult);
-    console.log('Populating periods...');
-    const periodsResult = await populatePeriods();
-    console.log('Periods:', periodsResult);
-    console.log('Populating realms...');
-    const realmsResult = await populateRealms();
-    console.log('Realms:', realmsResult);
+    console.log('🔄 Starting parallel population of database tables...');
+    
+    // Run all populate functions in parallel
+    const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+      populateDungeons(),
+      populateSeasons(),
+      populatePeriods(),
+      populateRealms()
+    ]);
+
+    // Log results with status
+    console.log('📊 Population Results:');
+    console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
+    console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
+    console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
+    console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+
+    // Check if any population failed
+    const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult]
+      .filter(result => result.status === 'rejected');
+    
+    if (failedPopulations.length > 0) {
+      console.warn(`⚠️ ${failedPopulations.length} population(s) failed, but continuing with server startup...`);
+    }
+
     app.listen(PORT, () => {
       console.log(`🚀 WoW API Proxy server running on port ${PORT}`);
       console.log(`❤️ Healthcheck: http://localhost:${PORT}/health`);
       console.log(`📚 Connected to DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
+      console.log(``);
       console.log(`** SERVICE IS READY **`);
     });
   } catch (err) {
