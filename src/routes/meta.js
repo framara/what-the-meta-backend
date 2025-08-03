@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../services/db');
 const { SEASON_METADATA, EXPANSION_METADATA } = require('../config/constants');
+const { getSpecEvolutionForSeason, getCompositionDataForSeason } = require('../services/meta-helpers');
 
 const router = express.Router();
 
@@ -65,77 +66,6 @@ const router = express.Router();
  *   * /meta/spec-evolution/:season_id (AIPredictionsPage, MetaEvolutionPage)
  * - /meta/season-data/:season_id endpoint has been removed (no longer used)
  */
-
-// Helper function to get spec evolution data for a specific season
-async function getSpecEvolutionForSeason(season_id) {
-  // Get all periods for the season
-  const periodsResult = await db.pool.query(
-    'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
-    [season_id]
-  );
-  const periods = periodsResult.rows;
-  
-  // Get season and expansion metadata
-  const seasonMetadata = SEASON_METADATA[season_id];
-  let expansionId = null;
-  let expansionName = null;
-  let seasonName = null;
-  
-  if (seasonMetadata) {
-    seasonName = seasonMetadata.name;
-    // Find the expansion that contains this season
-    for (const [expId, expansion] of Object.entries(EXPANSION_METADATA)) {
-      if (expansion.seasons && expansion.seasons.includes(season_id)) {
-        expansionId = parseInt(expId);
-        expansionName = expansion.name;
-        break;
-      }
-    }
-  }
-  
-  // For each period, get top keys and aggregate spec popularity
-  const evolution = [];
-  let weekCounter = 1;
-  
-  for (const period of periods) {
-    const keysResult = await db.pool.query(
-      'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
-      [season_id, period.id]
-    );
-    // Aggregate spec counts for this period
-    const specCounts = {};
-    for (const row of keysResult.rows) {
-      for (const m of row.members || []) {
-        specCounts[m.spec_id] = (specCounts[m.spec_id] || 0) + 1;
-      }
-    }
-    
-    // Only include periods that have spec data
-    if (Object.keys(specCounts).length > 0) {
-      const periodLabel = seasonName ? `${seasonName} - Week ${weekCounter}` : null;
-      
-      evolution.push({
-        period_id: period.id,
-        week: weekCounter,
-        period_label: periodLabel,
-        spec_counts: specCounts
-      });
-      weekCounter++;
-    }
-  }
-  
-  // Only return season data if it has non-empty periods
-  if (evolution.length > 0) {
-    return { 
-      season_id, 
-      expansion_id: expansionId,
-      expansion_name: expansionName,
-      season_name: seasonName,
-      evolution 
-    };
-  }
-  return null; // Return null for seasons with only empty periods
-}
 
 // GET /meta/top-keys
 // Purpose: Retrieves top keys with optional filtering by period/dungeon
@@ -263,43 +193,15 @@ router.get('/composition-data/:season_id', async (req, res) => {
   }
 
   try {
-    // Get all periods for the season
-    const periodsResult = await db.pool.query(
-      'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
-      [season_id]
-    );
-    const periods = periodsResult.rows;
+    // Use the helper function to get composition data for this season
+    const result = await getCompositionDataForSeason(season_id);
 
-    if (periods.length === 0) {
-      return res.status(404).json({ error: 'No periods found for this season' });
+    // If the season has no non-empty periods, return 404
+    if (result === null) {
+      return res.status(404).json({ error: 'No composition data found for this season' });
     }
-
-    // Get top 1000 keys for each period (optimized - no character names)
-    const seasonData = [];
-    for (const period of periods) {
-      const keysResult = await db.pool.query(
-        'SELECT id, keystone_level, score, (SELECT json_agg(json_build_object(\'class_id\', m->>\'class_id\', \'spec_id\', m->>\'spec_id\', \'role\', m->>\'role\')) FROM json_array_elements(members) AS m) AS members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2 ORDER BY keystone_level DESC, score DESC LIMIT 1000',
-        [season_id, period.id]
-      );
-
-      seasonData.push({
-        period_id: period.id,
-        keys_count: keysResult.rows.length,
-        keys: keysResult.rows
-      });
-    }
-
-    // Calculate summary statistics
-    const totalKeys = seasonData.reduce((sum, period) => sum + period.keys_count, 0);
-    const totalPeriods = seasonData.length;
-
-    res.json({
-      season_id,
-      total_periods: totalPeriods,
-      total_keys: totalKeys,
-      periods: seasonData
-    });
-
+    
+    res.json(result);
   } catch (err) {
     console.error('[COMPOSITION DATA ERROR]', err);
     res.status(500).json({ error: err.message });
@@ -387,4 +289,4 @@ router.get('/spec-evolution/:season_id', async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;
