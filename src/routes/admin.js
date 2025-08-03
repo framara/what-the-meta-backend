@@ -813,9 +813,6 @@ router.post('/cleanup-leaderboard', async (req, res) => {
 // --- Clear output directory endpoint ---
 router.post('/clear-output', async (req, res) => {
   const outputDir = path.join(__dirname, '../output');
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ status: 'NOT OK', error: 'Not allowed in production' });
-  }
   if (!fs.existsSync(outputDir)) {
     return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
   }

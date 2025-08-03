@@ -175,15 +175,15 @@ async function refreshViews() {
   }
 }
 
-async function vacuumFull() {
-  console.log('[DAILY] Performing VACUUM FULL on database');
+async function vacuumAnalyze() {
+  console.log('[DAILY] Performing VACUUM ANALYZE on database');
   
   try {
-    const response = await makeRequest('POST', '/admin/vacuum-full');
-    console.log('[DAILY] Successfully completed VACUUM FULL');
+    const response = await makeRequest('POST', '/admin/vacuum-analyze');
+    console.log('[DAILY] Successfully completed VACUUM ANALYZE');
     return response;
   } catch (error) {
-    console.error('[DAILY ERROR] Failed to perform VACUUM FULL:', error.message);
+    console.error('[DAILY ERROR] Failed to perform VACUUM ANALYZE:', error.message);
     throw error;
   }
 }
@@ -211,9 +211,9 @@ async function runOneOffAutomation() {
     console.log('\n=== STEP 4: Cleaning up leaderboard data ===');
     const cleanupResult = await cleanupLeaderboard(fetchResult.seasonId);
     
-    // Step 5: Perform VACUUM FULL on database
-    console.log('\n=== STEP 5: Performing VACUUM FULL ===');
-    const vacuumResult = await vacuumFull();
+    // Step 5: Perform VACUUM ANALYZE on database
+    console.log('\n=== STEP 5: Performing VACUUM ANALYZE ===');
+    const vacuumResult = await vacuumAnalyze();
     
     // Step 6: Refresh materialized views
     console.log('\n=== STEP 6: Refreshing materialized views ===');
@@ -278,6 +278,6 @@ module.exports = {
   importLeaderboardData,
   clearOutput,
   cleanupLeaderboard,
-  vacuumFull,
+  vacuumAnalyze,
   refreshViews
 }; 
