@@ -251,17 +251,14 @@ ${JSON.stringify(specEvolution, null, 2)}
 
 SPEC NAMES REFERENCE:
 Use these exact spec names in your predictions:
-${Object.keys(specTemporalData).map(specId => {
-  const spec = WOW_SPECIALIZATIONS.find(s => s.id === parseInt(specId));
-  const classInfo = WOW_CLASSES.find(c => c.id === spec?.classId);
-  const role = WOW_SPEC_ROLES[parseInt(specId)] || 'unknown';
-  return `- specId ${specId}: ${spec?.name || 'Unknown'} (${classInfo?.name || 'Unknown'}) - Role: ${role}`;
-}).join('\n')}
+- Tank specs: 73 (Protection Warrior), 66 (Protection Paladin), 250 (Blood Death Knight), 104 (Guardian Druid), 581 (Vengeance Demon Hunter), 268 (Brewmaster Monk)
+- Healer specs: 65 (Holy Paladin), 256 (Discipline Priest), 257 (Holy Priest), 264 (Restoration Shaman), 105 (Restoration Druid), 270 (Mistweaver Monk), 1468 (Preservation Evoker)
+- DPS specs: 71 (Arms Warrior), 72 (Fury Warrior), 70 (Retribution Paladin), 253 (Beast Mastery Hunter), 254 (Marksmanship Hunter), 255 (Survival Hunter), 259 (Assassination Rogue), 260 (Outlaw Rogue), 261 (Subtlety Rogue), 258 (Shadow Priest), 251 (Frost Death Knight), 252 (Unholy Death Knight), 262 (Elemental Shaman), 263 (Enhancement Shaman), 62 (Arcane Mage), 63 (Fire Mage), 64 (Frost Mage), 265 (Affliction Warlock), 266 (Demonology Warlock), 267 (Destruction Warlock), 269 (Windwalker Monk), 102 (Balance Druid), 103 (Feral Druid), 577 (Havoc Demon Hunter), 1467 (Devastation Evoker), 1473 (Augmentation Evoker)
 
 IMPORTANT: 
 1. Use the exact spec names from the reference above (e.g., "Vengeance", "Discipline", "Unholy")
 2. Use the exact class names from the reference above (e.g., "Demon Hunter", "Priest", "Death Knight")
-3. Make sure you do not repeat the same spec in the top 5 rising and declining lists
+3. CRITICAL: Each spec can only appear ONCE in the entire predictions array. Do NOT include the same specId more than once.
 4. Do NOT include classColor in your response - we will handle colors on the backend
 5. Respond ONLY with valid JSON in the exact format specified. Do not include any additional text, explanations, or markdown formatting. Start your response with { and end with }.`
         }
@@ -346,8 +343,21 @@ IMPORTANT:
       return res.status(500).json({ error: 'Invalid AI response format' });
     }
 
+    // Remove duplicate predictions by specId (keep the first occurrence)
+    const uniquePredictions = [];
+    const seenSpecIds = new Set();
+    
+    for (const pred of parsedResponse.predictions) {
+      if (!seenSpecIds.has(pred.specId)) {
+        seenSpecIds.add(pred.specId);
+        uniquePredictions.push(pred);
+      } else {
+        console.log(`⚠️ [AI] Removed duplicate prediction for specId: ${pred.specId}`);
+      }
+    }
+    
     // Process predictions to ensure they have all required fields
-    const processedPredictions = parsedResponse.predictions.map(pred => {
+    const processedPredictions = uniquePredictions.map(pred => {
       // Find the spec by ID
       const spec = WOW_SPECIALIZATIONS.find(s => s.id === pred.specId);
       const specName = pred.specName || spec?.name || 'Unknown';
@@ -443,7 +453,7 @@ IMPORTANT:
 // POST /ai/meta-health
 // Purpose: AI-powered analysis of meta health, diversity, and balance
 router.post('/meta-health', async (req, res) => {
-  const { seasonId } = req.body;
+  const { seasonId, forceRefresh } = req.body;
   
   if (!seasonId) {
     return res.status(400).json({ error: 'Missing required data: seasonId' });
@@ -476,7 +486,7 @@ router.post('/meta-health', async (req, res) => {
       [seasonId, 'meta_health']
     );
 
-    if (cachedResult.rows.length > 0) {
+    if (cachedResult.rows.length > 0 && !forceRefresh) {
       const cacheAge = Date.now() - new Date(cachedResult.rows[0].created_at).getTime();
       const maxAge = 24 * 60 * 60 * 1000; // 24 hours
       
@@ -488,6 +498,8 @@ router.post('/meta-health', async (req, res) => {
       } else {
         console.log(`📋 [AI] Cache expired for season ${seasonId}, will generate new analysis`);
       }
+    } else if (forceRefresh) {
+      console.log(`🔄 [AI] Force refresh requested for season ${seasonId}, bypassing cache`);
     } else {
       console.log(`📋 [AI] No cached data found for season ${seasonId}`);
     }
@@ -496,8 +508,8 @@ router.post('/meta-health', async (req, res) => {
     console.log(`📊 [AI] Processing data for meta health analysis...`);
     
     // Limit processing to avoid memory and token issues
-    const maxPeriodsToProcess = Math.min(compositionData.total_periods, 25); // Further reduce to 15 periods max
-    const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess); // Use the last 15 periods
+    const maxPeriodsToProcess = Math.min(compositionData.total_periods, 25);
+    const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess);
     
     // Process composition data for meta health analysis
     const metaHealthData = {
@@ -530,7 +542,7 @@ router.post('/meta-health', async (req, res) => {
       const avgLevelForPeriod = periodKeys.length > 0 ? totalLevel / periodKeys.length : 0;
       
       // Limit keys processed per period to avoid memory issues
-      const maxKeysPerPeriod = 1000; // Further reduce to 500 keys per period
+      const maxKeysPerPeriod = 1000;
       const keysToProcess = periodKeys.slice(0, maxKeysPerPeriod);
       
       const periodStats = {
@@ -546,11 +558,15 @@ router.post('/meta-health', async (req, res) => {
         const composition = [];
         const roleCounts = { tank: 0, healer: 0, dps: 0 };
         
+        // Track which specs appeared in this run
+        const runSpecs = new Set();
+        const runRoles = new Set();
+        
         run.members?.forEach((member) => {
           const specId = member.spec_id;
           const role = WOW_SPEC_ROLES[specId] || 'dps';
           
-          // Count specs by role
+          // Count specs by role (only once per run)
           if (!metaHealthData.roleAnalysis[role].specs[specId]) {
             metaHealthData.roleAnalysis[role].specs[specId] = {
               appearances: 0,
@@ -559,10 +575,19 @@ router.post('/meta-health', async (req, res) => {
             };
           }
           
-          metaHealthData.roleAnalysis[role].specs[specId].appearances++;
-          metaHealthData.roleAnalysis[role].specs[specId].totalRuns++;
-          metaHealthData.roleAnalysis[role].specs[specId].avgLevel += run.keystone_level;
-          metaHealthData.roleAnalysis[role].totalRuns++;
+          // Only count each spec once per run
+          if (!runSpecs.has(specId)) {
+            metaHealthData.roleAnalysis[role].specs[specId].appearances++;
+            metaHealthData.roleAnalysis[role].specs[specId].totalRuns++;
+            metaHealthData.roleAnalysis[role].specs[specId].avgLevel += run.keystone_level;
+            runSpecs.add(specId);
+          }
+          
+          // Only count each role once per run
+          if (!runRoles.has(role)) {
+            metaHealthData.roleAnalysis[role].totalRuns++;
+            runRoles.add(role);
+          }
           
           roleCounts[role]++;
           periodStats.roleCounts[role]++;
@@ -605,7 +630,7 @@ router.post('/meta-health', async (req, res) => {
     // Calculate averages for compositions and limit to top compositions only
     const sortedCompositions = Object.entries(metaHealthData.compositionAnalysis.compositionCounts)
       .sort(([,a], [,b]) => b.count - a.count)
-      .slice(0, 20); // Only keep top 20 compositions
+      .slice(0, 30); // Only keep top 20 compositions
     
     const limitedCompositionCounts = {};
     sortedCompositions.forEach(([key, comp]) => {
@@ -620,82 +645,71 @@ router.post('/meta-health', async (req, res) => {
     // Prepare data for OpenAI analysis
     const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
-    const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to analyze the health and diversity of the current meta, including temporal evolution and dramatic changes.
+    const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to provide simple, clear insights about the current meta state.
 
 ANALYSIS REQUIREMENTS:
-1. Analyze season starting meta/specs diversity
-2. Analyze any significant or dramatic changes at given weeks
-3. Compare season start versus current state
-4. Assess overall meta health score (0-100)
-5. Calculate diversity scores for each role (tank, healer, dps)
-6. Evaluate composition health and flexibility
-7. Identify dramatic weekly shifts and their impact
-8. Provide specific, actionable insights and recommendations
+1. Identify the most dominant specs in each role (tank, healer, dps)
+   - For tank and healer roles: identify the 3 specs with the HIGHEST usage percentages, but ONLY include specs with 5% or higher usage. If fewer than 3 specs meet the 5% threshold, include only those that do.
+   - For DPS role: identify the 3 specs with the HIGHEST usage percentages (since there are 3 DPS spots in a group)
+   - IMPORTANT: Sort specs by usage percentage (highest to lowest) for dominantSpecs
+2. Identify any specs that are clearly underperforming or rarely used
+   - For each role: identify the 3 specs with the LOWEST usage percentages
+   - IMPORTANT: Sort specs by usage percentage (lowest to highest) and take the bottom 3 for underusedSpecs
+3. Assess if there are any obvious balance issues:
+   - For tank/healer: a single spec having more than 50% usage is concerning, 75% or more is bad for meta health  
+   - For DPS: a single spec having more than 15% usage is too high (considering 26 DPS specs and only 3 spots available)
+   - If the sum of the top 3 specs for a role is more than 46% of the total runs, then the meta is unbalanced
+4. Provide 2-3 simple, actionable insights about the meta
+5. Calculate total run counts for each role to enable percentage calculations
 
 SPEC ROLES MAPPING:
 - Tank specs: 73, 66, 250, 104, 581, 268
 - Healer specs: 65, 256, 257, 264, 105, 270, 1468
-- DPS specs: 71, 72, 70, 253, 254, 255, 259, 260, 261, 256, 258, 251, 252, 262, 263, 62, 63, 64, 265, 266, 267, 269, 102, 103, 577, 1467, 1473
+- DPS specs: 71, 72, 70, 253, 254, 255, 259, 260, 261, 258, 251, 252, 262, 263, 62, 63, 64, 265, 266, 267, 269, 102, 103, 577, 1467, 1473
+
+SPEC NAMES REFERENCE:
+- Tank specs: 73 (Protection Warrior), 66 (Protection Paladin), 250 (Blood Death Knight), 104 (Guardian Druid), 581 (Vengeance Demon Hunter), 268 (Brewmaster Monk)
+- Healer specs: 65 (Holy Paladin), 256 (Discipline Priest), 257 (Holy Priest), 264 (Restoration Shaman), 105 (Restoration Druid), 270 (Mistweaver Monk), 1468 (Preservation Evoker)
+- DPS specs: 71 (Arms Warrior), 72 (Fury Warrior), 70 (Retribution Paladin), 253 (Beast Mastery Hunter), 254 (Marksmanship Hunter), 255 (Survival Hunter), 259 (Assassination Rogue), 260 (Outlaw Rogue), 261 (Subtlety Rogue), 258 (Shadow Priest), 251 (Frost Death Knight), 252 (Unholy Death Knight), 262 (Elemental Shaman), 263 (Enhancement Shaman), 62 (Arcane Mage), 63 (Fire Mage), 64 (Frost Mage), 265 (Affliction Warlock), 266 (Demonology Warlock), 267 (Destruction Warlock), 269 (Windwalker Monk), 102 (Balance Druid), 103 (Feral Druid), 577 (Havoc Demon Hunter), 1467 (Devastation Evoker), 1473 (Augmentation Evoker)
 
 RESPONSE FORMAT:
 Return a JSON object with this exact structure:
 {
-  "metaHealth": {
-    "overallScore": number,
-    "diversityScore": number,
-    "balanceScore": number,
-    "compositionHealth": number,
-    "trends": {
-      "improving": boolean,
-      "diversityTrend": string,
-      "balanceTrend": string
-    }
+  "metaSummary": {
+    "overallState": string, /* "Healthy", "Concerning", "Unhealthy" */
+    "summary": string, /* 1-2 sentence overview of the meta */
+    "keyInsights": [string] /* 2-3 simple insights */
   },
   "roleAnalysis": {
     "tank": {
-      "viableSpecs": number,
-      "dominanceScore": number,
-      "topSpec": {"specId": number, "usage": number},
-      "healthStatus": string,
-      "recommendations": [string]
+      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
+      "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
+      "healthStatus": string, /* "Good", "Concerning", "Poor" */
+      "totalRuns": number /* Total number of runs for this role */
     },
-    "healer": { /* same structure */ },
-    "dps": { /* same structure */ }
-  },
-  "compositionAnalysis": {
-    "totalCompositions": number,
-    "dominantComposition": {
-      "specs": [number],
-      "usage": number,
-      "healthStatus": string
+    "healer": {
+      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
+      "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
+      "healthStatus": string, /* "Good", "Concerning", "Poor" */
+      "totalRuns": number /* Total number of runs for this role */
     },
-    "compositionDiversity": number,
-    "flexibility": {
-      "highFlexibility": [string],
-      "lowFlexibility": [string],
-      "recommendations": [string]
+    "dps": {
+      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
+      "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
+      "healthStatus": string, /* "Good", "Concerning", "Poor" */
+      "totalRuns": number /* Total number of runs for this role */
     }
   },
-  "temporalAnalysis": {
-    "seasonStartDiversity": number,
-    "currentDiversity": number,
-    "diversityChange": number,
-    "dramaticChanges": [
-      {
-        "week": number,
-        "description": string,
-        "impact": string
-      }
-    ],
-    "seasonEvolution": {
-      "startState": string,
-      "currentState": string,
-      "keyChanges": [string]
+  "balanceIssues": [
+    {
+      "type": string, /* "dominance", "underuse", "role_imbalance" */
+      "description": string, /* Unique, non-redundant description */
+      "severity": string /* "low", "medium", "high" */
     }
-  },
-  "aiInsights": [string],
-  "recommendations": [string]
-}`;
+  ]
+}
+
+IMPORTANT: Ensure balance issue descriptions are unique and non-redundant. Each issue should focus on a distinct aspect of the meta.`;
 
     const userPrompt = `Analyze this processed Mythic+ season data for meta health and diversity:
 
@@ -711,10 +725,7 @@ ${JSON.stringify(metaHealthData.compositionAnalysis, null, 2)}
 TEMPORAL ANALYSIS:
 ${JSON.stringify(metaHealthData.temporalAnalysis, null, 2)}
 
-SPEC NAMES REFERENCE:
-${Object.values(WOW_SPECIALIZATIONS).map(spec => 
-  `${spec.id}: ${spec.name} (${WOW_CLASSES.find(c => c.id === spec.classId)?.name})`
-).join('\n')}
+
 
 IMPORTANT: 
 1. Use exact spec names from the reference
@@ -801,9 +812,40 @@ IMPORTANT:
     }
 
     // Validate the AI response structure
-    if (!parsedResponse.metaHealth || !parsedResponse.roleAnalysis || !parsedResponse.compositionAnalysis || !parsedResponse.temporalAnalysis) {
+    if (!parsedResponse.metaSummary || !parsedResponse.roleAnalysis || !parsedResponse.balanceIssues) {
       return res.status(500).json({ error: 'Invalid AI response format - missing required sections' });
     }
+
+    // Remove duplicate specs within each role's dominant and underused specs
+    Object.keys(parsedResponse.roleAnalysis).forEach(role => {
+      const roleData = parsedResponse.roleAnalysis[role];
+      
+      // Remove duplicates from dominantSpecs
+      if (roleData.dominantSpecs && Array.isArray(roleData.dominantSpecs)) {
+        const seenDominant = new Set();
+        roleData.dominantSpecs = roleData.dominantSpecs.filter(spec => {
+          if (seenDominant.has(spec.specId)) {
+            console.log(`⚠️ [AI] Removed duplicate dominant spec ${spec.specId} from ${role}`);
+            return false;
+          }
+          seenDominant.add(spec.specId);
+          return true;
+        });
+      }
+      
+      // Remove duplicates from underusedSpecs
+      if (roleData.underusedSpecs && Array.isArray(roleData.underusedSpecs)) {
+        const seenUnderused = new Set();
+        roleData.underusedSpecs = roleData.underusedSpecs.filter(spec => {
+          if (seenUnderused.has(spec.specId)) {
+            console.log(`⚠️ [AI] Removed duplicate underused spec ${spec.specId} from ${role}`);
+            return false;
+          }
+          seenUnderused.add(spec.specId);
+          return true;
+        });
+      }
+    });
 
     // Cache the analysis result
     try {
