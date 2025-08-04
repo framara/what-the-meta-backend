@@ -630,7 +630,7 @@ router.post('/meta-health', async (req, res) => {
     // Calculate averages for compositions and limit to top compositions only
     const sortedCompositions = Object.entries(metaHealthData.compositionAnalysis.compositionCounts)
       .sort(([,a], [,b]) => b.count - a.count)
-      .slice(0, 30); // Only keep top 20 compositions
+      .slice(0, 30); // Only keep top 30 compositions
     
     const limitedCompositionCounts = {};
     sortedCompositions.forEach(([key, comp]) => {
@@ -641,6 +641,116 @@ router.post('/meta-health', async (req, res) => {
     });
     
     metaHealthData.compositionAnalysis.compositionCounts = limitedCompositionCounts;
+
+    // Enhanced composition analysis: focus on the most popular group and spec replacements
+    const compositionAnalysis = {
+      mostPopularGroup: null,
+      specReplacements: {},
+      compositionDiversity: 'Medium',
+      dominantPatterns: []
+    };
+
+    // Find the single most popular composition
+    const topCompositions = Object.entries(limitedCompositionCounts)
+      .sort(([,a], [,b]) => b.count - a.count)
+      .slice(0, 1); // Only the most popular composition
+
+    if (topCompositions.length > 0) {
+      const mostPopularComposition = topCompositions[0][1];
+      const mostPopularSpecs = new Set(mostPopularComposition.specs);
+      
+      // Set the most popular group
+      compositionAnalysis.mostPopularGroup = {
+        specs: mostPopularComposition.specs,
+        specNames: mostPopularComposition.specs.map(specId => WOW_SPECIALIZATIONS[specId] || `Spec ${specId}`),
+        usage: (mostPopularComposition.count / metaHealthData.compositionAnalysis.totalCompositions) * 100,
+        avgLevel: mostPopularComposition.avgLevel,
+        count: mostPopularComposition.count
+      };
+
+      // Analyze spec replacements for each member of the most popular group
+      const specReplacements = {};
+      
+      mostPopularComposition.specs.forEach(specId => {
+        const specName = WOW_SPECIALIZATIONS[specId] || `Spec ${specId}`;
+        const role = WOW_SPEC_ROLES[specId] || 'dps';
+        
+        // Find all compositions where this spec is replaced by another spec
+        const replacements = [];
+        const replacementCounts = {};
+        
+        Object.entries(limitedCompositionCounts).forEach(([key, comp]) => {
+          if (comp.specs.length !== 5) return; // Only 5-spec compositions
+          
+          // Check if this composition shares 4 specs with the most popular group
+          const sharedSpecs = comp.specs.filter(spec => mostPopularSpecs.has(spec));
+          if (sharedSpecs.length === 4) {
+            // Find which spec is different (the replacement)
+            const differentSpec = comp.specs.find(spec => !mostPopularSpecs.has(spec));
+            const replacedSpec = mostPopularComposition.specs.find(spec => !comp.specs.includes(spec));
+            
+            // Only count if this composition is replacing the specific spec we're analyzing
+            if (replacedSpec === specId && differentSpec) {
+              const replacementRole = WOW_SPEC_ROLES[differentSpec] || 'dps';
+              
+              // Only count if the replacement is the same role as the original spec
+              if (replacementRole === role) {
+                if (!replacementCounts[differentSpec]) {
+                  replacementCounts[differentSpec] = {
+                    count: 0,
+                    avgLevel: 0,
+                    specName: WOW_SPECIALIZATIONS[differentSpec] || `Spec ${differentSpec}`,
+                    role: replacementRole
+                  };
+                }
+                replacementCounts[differentSpec].count += comp.count;
+                replacementCounts[differentSpec].avgLevel += comp.avgLevel * comp.count;
+              }
+            }
+          }
+        });
+        
+        // Convert to array and sort by count
+        const sortedReplacements = Object.entries(replacementCounts)
+          .map(([specId, data]) => ({
+            specId: parseInt(specId),
+            specName: data.specName,
+            count: data.count,
+            avgLevel: Math.round(data.avgLevel / data.count),
+            usage: (data.count / metaHealthData.compositionAnalysis.totalCompositions) * 100,
+            role: data.role
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5); // Top 5 replacements
+        
+        specReplacements[specId] = {
+          specName: specName,
+          role: role,
+          replacements: sortedReplacements
+        };
+      });
+      
+      compositionAnalysis.specReplacements = specReplacements;
+    }
+
+    // Assess composition diversity
+    const uniqueCompositions = Object.keys(limitedCompositionCounts).length;
+    const totalRuns = metaHealthData.compositionAnalysis.totalCompositions;
+    const diversityRatio = uniqueCompositions / totalRuns;
+    
+    if (diversityRatio > 0.1) {
+      compositionAnalysis.compositionDiversity = 'High';
+    } else if (diversityRatio > 0.05) {
+      compositionAnalysis.compositionDiversity = 'Medium';
+    } else {
+      compositionAnalysis.compositionDiversity = 'Low';
+    }
+
+    // Add composition analysis to metaHealthData
+    metaHealthData.compositionAnalysis = {
+      ...metaHealthData.compositionAnalysis,
+      ...compositionAnalysis
+    };
 
     // Pre-calculate spec usage totals and percentages for each role
     const specUsageData = {
@@ -691,12 +801,18 @@ ANALYSIS REQUIREMENTS:
    - For each role: identify the 3 specs with the LOWEST usage percentages
    - IMPORTANT: Sort specs by usage percentage (lowest to highest) and take the bottom 3 for underusedSpecs
    - IMPORTANT: Use the pre-calculated usage percentages from the SPEC USAGE DATA
-3. Assess if there are any obvious balance issues:
+3. Analyze the most popular group composition and spec flexibility:
+   - Focus on the single most popular group composition (defined by its 5 unique spec IDs)
+   - For each of the 5 specs in the most popular group, identify which other specs are most likely to replace them
+   - Analyze how often each spec in the popular group gets replaced and by which alternatives
+   - Consider if the meta is flexible (many viable replacements) or rigid (few alternatives)
+   - Note if certain specs in the popular group are more replaceable than others
+4. Assess if there are any obvious balance issues:
    - For tank/healer: a single spec having more than 50% usage is concerning, 75% or more is bad for meta health  
    - For DPS: a single spec having more than 15% usage is too high (considering 26 DPS specs and only 3 spots available)
    - For DPS: if the accumulated usage of the top 3 specs is more than 46% of the total runs, then the DPS meta is bad
-4. Provide 2-3 simple, actionable insights about the meta
-5. Use the pre-calculated total run counts from the SPEC USAGE DATA
+5. Provide 2-3 simple, actionable insights about the meta
+6. Use the pre-calculated total run counts from the SPEC USAGE DATA
 
 SPEC ROLES MAPPING:
 - Tank specs: 73, 66, 250, 104, 581, 268
@@ -736,9 +852,36 @@ Return a JSON object with this exact structure:
       "totalRuns": number /* Total number of runs for this role */
     }
   },
+  "compositionAnalysis": {
+    "mostPopularGroup": {
+      "specs": [number], /* Array of 5 spec IDs in the most popular composition */
+      "specNames": [string], /* Array of spec names for display */
+      "usage": number, /* Percentage of total runs this composition represents */
+      "avgLevel": number, /* Average keystone level for this composition */
+      "count": number /* Total count of this composition */
+    },
+    "specReplacements": {
+      "specId": {
+        "specName": string, /* Name of the spec in the most popular group */
+        "role": string, /* "tank", "healer", or "dps" */
+        "replacements": [
+          {
+            "specId": number, /* ID of the replacement spec */
+            "specName": string, /* Name of the replacement spec */
+            "count": number, /* How many times this replacement occurred */
+            "avgLevel": number, /* Average keystone level for this replacement */
+            "usage": number, /* Percentage of total runs this replacement represents */
+            "role": string /* Role of the replacement spec */
+          }
+        ]
+      }
+    },
+    "compositionDiversity": string, /* "High", "Medium", "Low" - assessment of composition variety */
+    "dominantPatterns": [string] /* 1-2 sentences about composition flexibility and meta adaptability */
+  },
   "balanceIssues": [
     {
-      "type": string, /* "dominance", "underuse", "role_imbalance" */
+      "type": string, /* "dominance", "underuse", "role_imbalance", "composition_stagnation" */
       "description": string, /* Unique, non-redundant description */
       "severity": string /* "low", "medium", "high" */
     }
