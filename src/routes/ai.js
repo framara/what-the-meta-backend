@@ -642,6 +642,39 @@ router.post('/meta-health', async (req, res) => {
     
     metaHealthData.compositionAnalysis.compositionCounts = limitedCompositionCounts;
 
+    // Pre-calculate spec usage totals and percentages for each role
+    const specUsageData = {
+      tank: { specs: {}, totalRuns: metaHealthData.roleAnalysis.tank.totalRuns },
+      healer: { specs: {}, totalRuns: metaHealthData.roleAnalysis.healer.totalRuns },
+      dps: { specs: {}, totalRuns: metaHealthData.roleAnalysis.dps.totalRuns }
+    };
+
+    // Calculate usage percentages for each spec in each role
+    Object.keys(metaHealthData.roleAnalysis).forEach(role => {
+      const roleData = metaHealthData.roleAnalysis[role];
+      const totalRuns = roleData.totalRuns;
+      
+      Object.keys(roleData.specs).forEach(specId => {
+        const spec = roleData.specs[specId];
+        
+        // For DPS, account for 3 spots per group
+        let usagePercentage;
+        if (role === 'dps') {
+          const totalPossibleDpsSpots = totalRuns * 3;
+          usagePercentage = totalPossibleDpsSpots > 0 ? (spec.appearances / totalPossibleDpsSpots) * 100 : 0;
+        } else {
+          // For tank and healer, use total runs (1 spot per group)
+          usagePercentage = totalRuns > 0 ? (spec.appearances / totalRuns) * 100 : 0;
+        }
+        
+        specUsageData[role].specs[specId] = {
+          appearances: spec.appearances,
+          usagePercentage: Math.round(usagePercentage * 100) / 100, // Round to 2 decimal places
+          avgLevel: spec.avgLevel
+        };
+      });
+    });
+
     // Prepare data for OpenAI analysis
     const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
@@ -652,15 +685,18 @@ ANALYSIS REQUIREMENTS:
    - For tank and healer roles: identify the 3 specs with the HIGHEST usage percentages, but ONLY include specs with 5% or higher usage. If fewer than 3 specs meet the 5% threshold, include only those that do.
    - For DPS role: identify the 3 specs with the HIGHEST usage percentages (since there are 3 DPS spots in a group)
    - IMPORTANT: Sort specs by usage percentage (highest to lowest) for dominantSpecs
+   - IMPORTANT: Use the pre-calculated usage percentages from the SPEC USAGE DATA - do NOT calculate percentages yourself
+   - NOTE: DPS percentages are calculated based on total possible DPS spots (totalRuns * 3), not just total runs
 2. Identify any specs that are clearly underperforming or rarely used
    - For each role: identify the 3 specs with the LOWEST usage percentages
    - IMPORTANT: Sort specs by usage percentage (lowest to highest) and take the bottom 3 for underusedSpecs
+   - IMPORTANT: Use the pre-calculated usage percentages from the SPEC USAGE DATA
 3. Assess if there are any obvious balance issues:
    - For tank/healer: a single spec having more than 50% usage is concerning, 75% or more is bad for meta health  
    - For DPS: a single spec having more than 15% usage is too high (considering 26 DPS specs and only 3 spots available)
-   - If the sum of the top 3 specs for a role is more than 46% of the total runs, then the meta is unbalanced
+   - For DPS: if the accumulated usage of the top 3 specs is more than 46% of the total runs, then the DPS meta is bad
 4. Provide 2-3 simple, actionable insights about the meta
-5. Calculate total run counts for each role to enable percentage calculations
+5. Use the pre-calculated total run counts from the SPEC USAGE DATA
 
 SPEC ROLES MAPPING:
 - Tank specs: 73, 66, 250, 104, 581, 268
@@ -725,13 +761,15 @@ ${JSON.stringify(metaHealthData.compositionAnalysis, null, 2)}
 TEMPORAL ANALYSIS:
 ${JSON.stringify(metaHealthData.temporalAnalysis, null, 2)}
 
-
+PRE-CALCULATED SPEC USAGE DATA:
+${JSON.stringify(specUsageData, null, 2)}
 
 IMPORTANT: 
 1. Use exact spec names from the reference
 2. Respond ONLY with valid JSON in the exact format specified
 3. Start your response with { and end with }
-4. Do not include any additional text or markdown formatting`;
+4. Do not include any additional text or markdown formatting
+5. Use the pre-calculated usage percentages from the SPEC USAGE DATA above - do NOT calculate percentages yourself`;
 
     const openAIPrompt = {
       model: openAIModel,
