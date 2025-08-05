@@ -1,8 +1,11 @@
-# WoW API Proxy & Leaderboard Importer
+# What the Meta? - WoW API Backend
 
-## 🎯 Overview
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Website](https://img.shields.io/badge/Website-whatthemeta.io-blue.svg)](https://whatthemeta.io)
 
-This project provides a comprehensive solution for World of Warcraft Mythic+ leaderboard data collection, processing, and analysis. It includes:
+A comprehensive World of Warcraft Mythic+ API backend that provides real-time data collection, processing, and analysis for the What the Meta? platform.
+
+## 🌟 Features
 
 - **Blizzard API Proxy**: Direct access to all WoW Game Data endpoints with automatic OAuth handling
 - **Advanced Data Aggregation**: Multi-region leaderboard data collection and processing
@@ -11,15 +14,20 @@ This project provides a comprehensive solution for World of Warcraft Mythic+ lea
 - **Meta Analysis**: Specialized endpoints for AI/ML data consumption
 - **Automation**: Scheduled data collection and processing workflows
 
-## 📚 Documentation
+## 🚀 Live Demo
 
-- **[API Documentation](API_README.md)** - Complete API reference with all endpoints, parameters, and examples
-- **[Database Documentation](DB_README.md)** - Detailed database schema, relationships, and optimization guide
-- **[Environment Configuration](#environment-configuration)** - Setup and configuration guide
+Visit [whatthemeta.io](https://whatthemeta.io) to see the application in action.
 
-## 🚀 Quick Start
+## 🛠️ Tech Stack
 
-### Prerequisites
+- **Backend**: Node.js 18+, Express.js
+- **Database**: PostgreSQL 15+ with optimized schema
+- **API**: Blizzard Game Data API integration
+- **Authentication**: OAuth 2.0 for Blizzard API
+- **Deployment**: Docker, Docker Compose
+- **Monitoring**: Health checks, performance metrics
+
+## 📋 Prerequisites
 
 - **Node.js** 18+ 
 - **PostgreSQL** 15+ (or Docker)
@@ -28,44 +36,23 @@ This project provides a comprehensive solution for World of Warcraft Mythic+ lea
   - 4 CPU cores  
   - 50GB disk space
 
-### Installation
+## 🚀 Quick Start
 
-1. **Clone and install dependencies:**
+### 1. Clone and Install
+
 ```bash
 git clone <repository-url>
 cd wow-api
 npm install
 ```
 
-2. **Configure environment:**
+### 2. Configure Environment
+
 ```bash
 cp env.example .env
-# Edit .env with your configuration (see Environment Configuration below)
 ```
 
-3. **Start PostgreSQL (Docker recommended):**
-```bash
-docker-compose up -d
-```
-
-4. **Initialize database:**
-```bash
-# Run the database structure script
-psql -h localhost -U wowuser -d wow_leaderboard -f utils/db_structure.sql
-```
-
-5. **Start the server:**
-```bash
-npm start
-```
-
-The API will be available at `http://localhost:3000`
-
-## 🔧 Environment Configuration
-
-Create a `.env` file in the project root with the following variables:
-
-### Required Configuration
+Edit `.env` with your configuration:
 
 ```env
 # Blizzard API Credentials (Required)
@@ -82,33 +69,61 @@ PGDATABASE=wow_leaderboard
 # Admin Authentication (Required)
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your_secure_admin_password
-```
 
-### Optional Configuration
-
-```env
-# Server Configuration
+# Server Configuration (Optional)
 PORT=3000
 NODE_ENV=development
-
-# Rate Limiting
-RATE_LIMIT_WINDOW_MS=900000  # 15 minutes
+RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX_REQUESTS=100
-
-# Database Pool Configuration
-DB_POOL_MIN=2
-DB_POOL_MAX=10
-
-# Logging
-LOG_LEVEL=info
 ```
 
-### Getting Blizzard API Credentials
+### 3. Start PostgreSQL
 
-1. Go to [Blizzard Developer Portal](https://develop.battle.net/)
-2. Create a new application
-3. Note your Client ID and Client Secret
-4. Add your redirect URI if needed
+```bash
+docker-compose up -d
+```
+
+### 4. Initialize Database
+
+```bash
+# Run the database structure script
+psql -h localhost -U wowuser -d wow_leaderboard -f utils/db_structure.sql
+```
+
+### 5. Start the Server
+
+```bash
+npm start
+```
+
+The API will be available at `http://localhost:3000`
+
+## 📁 Project Structure
+
+```
+wow-api/
+├── src/
+│   ├── routes/          # API endpoints
+│   │   ├── admin.js     # Admin operations
+│   │   ├── advanced.js  # Advanced aggregation
+│   │   ├── auth.js      # Authentication
+│   │   ├── battle-net.js # Blizzard API proxy
+│   │   ├── meta.js      # Meta analysis
+│   │   └── wow.js       # WoW game data
+│   ├── middleware/      # Authentication, rate limiting
+│   ├── config/          # Constants and configuration
+│   └── services/        # Business logic
+├── utils/               # Database scripts and documentation
+├── output/              # Generated JSON files
+└── scripts/             # Automation and maintenance scripts
+```
+
+## 🔧 Available Scripts
+
+- `npm start` - Start production server
+- `npm run dev` - Start development server with nodemon
+- `npm run test` - Run test suite
+- `npm run lint` - Run ESLint
 
 ## 📊 API Endpoints Overview
 
@@ -118,7 +133,7 @@ LOG_LEVEL=info
 - **Meta Analysis**: `GET /meta/*` - Specialized endpoints for data analysis
 
 ### Advanced Aggregation
-- **Season Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/` - Collects all season data (supports period filtering with `fromPeriod` and `toPeriod` query parameters)
+- **Season Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/` - Collects all season data
 - **Period Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/:periodId` - Collects specific period data
 
 ### Admin Endpoints (Authentication Required)
@@ -142,8 +157,6 @@ The system uses PostgreSQL with the following core tables:
 - Top keys per group/period/dungeon
 - Global rankings
 - Specialization evolution data
-
-See [Database Documentation](DB_README.md) for complete schema details.
 
 ## 🔄 Data Pipeline
 
@@ -186,20 +199,44 @@ POST /admin/automation/trigger
 GET /admin/automation/status
 ```
 
-## 🛠️ Development
+## 📊 Data Sources
 
-### Project Structure
-```
-wow-api/
-├── src/
-│   ├── routes/          # API endpoints
-│   ├── middleware/      # Authentication, rate limiting
-│   ├── config/          # Constants and configuration
-│   └── utils/           # Helper functions
-├── utils/               # Database scripts and documentation
-├── output/              # Generated JSON files
-└── docs/                # Additional documentation
-```
+All data is sourced from the official Blizzard World of Warcraft API. We do not claim ownership of game data and acknowledge that it belongs to Blizzard Entertainment.
+
+## 🤝 Contributing
+
+We welcome contributions! Please read our contributing guidelines:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## ⚠️ Important Notice
+
+- **Code Ownership**: All code in this repository is owned by What the Meta? and is protected by copyright law.
+- **Game Data**: World of Warcraft data belongs to Blizzard Entertainment. We only display publicly available information.
+- **Commercial Use**: This code is provided for educational and personal use. Commercial use requires explicit permission.
+- **Attribution**: If you use this code, you must include proper attribution to What the Meta?.
+
+## 🆘 Support
+
+- **Website**: [whatthemeta.io](https://whatthemeta.io)
+- **Email**: contact@whatthemeta.io
+- **GitHub Issues**: [Report bugs or request features](https://github.com/framara/wow-api/issues)
+
+## 📚 Documentation
+
+- **[API Documentation](API_README.md)** - Complete API reference with all endpoints, parameters, and examples
+- **[Database Documentation](DB_README.md)** - Detailed database schema, relationships, and optimization guide
+- **[Security Documentation](SECURITY.md)** - Security policies and vulnerability reporting
+
+## 🛠️ Development
 
 ### Key Features
 - **Multi-region support** (US, EU, KR, TW)
@@ -231,7 +268,7 @@ wow-api/
 - **Rate limiting** to prevent abuse
 - **Admin authentication** for sensitive operations
 
-## 🆘 Support & Troubleshooting
+## 🆘 Troubleshooting
 
 ### Common Issues
 
@@ -263,31 +300,29 @@ GET /admin/automation/status
 GET /health
 ```
 
-### Logs
-- Application logs: Check console output
-- Database logs: `docker logs wow-postgres`
-- Error tracking: Check response `failedReasons` arrays
+## 📞 Getting Blizzard API Credentials
 
-## 📄 License
+1. Go to [Blizzard Developer Portal](https://develop.battle.net/)
+2. Create a new application
+3. Note your Client ID and Client Secret
+4. Add your redirect URI if needed
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## 🎉 Acknowledgments
 
-## 🤝 Contributing
+- Blizzard Entertainment for providing the WoW API
+- The WoW Mythic+ community for inspiration and feedback
+- Open source contributors who have helped improve this project
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+## 📈 Roadmap
 
-## 📞 Support
-
-For issues or questions:
-1. Check the [API Documentation](API_README.md)
-2. Review [Database Documentation](DB_README.md)
-3. Check server logs for detailed error information
-4. Create an issue in the repository
+- [ ] Enhanced caching strategies
+- [ ] Real-time data streaming
+- [ ] Advanced analytics endpoints
+- [ ] GraphQL API support
+- [ ] Microservices architecture
 
 ---
 
-**Note**: This system is designed for educational and research purposes. Please respect Blizzard's API terms of service and rate limits. 
+**Made with ❤️ for the WoW community**
+
+*Not affiliated with Blizzard Entertainment* 
