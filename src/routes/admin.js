@@ -5,14 +5,68 @@ const { getAllRegions } = require('../config/regions');
 const fs = require('fs');
 const path = require('path');
 const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
-const pLimit = require('p-limit');
+
+// Try to import p-limit with error handling
+let pLimit;
+try {
+  const pLimitModule = require('p-limit');
+  pLimit = pLimitModule.default || pLimitModule;
+} catch (error) {
+  console.error('[ADMIN] Failed to import p-limit, using fallback:', error.message);
+  // Fallback implementation
+  pLimit = (concurrency) => {
+    const queue = [];
+    let active = 0;
+    
+    const next = () => {
+      if (queue.length === 0) return;
+      if (active >= concurrency) return;
+      
+      active++;
+      const { fn, resolve, reject } = queue.shift();
+      
+      Promise.resolve().then(fn)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    
+    return (fn) => {
+      return new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    };
+  };
+}
+
 const { pipeline } = require('stream');
 const { promisify } = require('util');
 const copyFrom = require('pg-copy-streams').from;
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
+const adminAuthMiddleware = require('../middleware/admin-auth');
 
 const router = express.Router();
+
+// Apply admin authentication middleware to all routes
+router.use(adminAuthMiddleware);
+
+// Test endpoint for admin authentication
+router.get('/test', (req, res) => {
+  console.log(`🔐 [ADMIN] GET /admin/test`);
+  res.json({
+    success: true,
+    message: 'Admin authentication successful',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Import the automation functions
+const automation = require('../../scripts/render-automation');
 
 // --- POPULATE FUNCTIONS ---
 async function populateDungeons() {
@@ -176,6 +230,7 @@ function dedupeRunGroupMembers(members) {
 }
 // --- HTTP ENDPOINTS ---
 router.post('/populate-dungeons', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-dungeons`);
   try {
     const result = await populateDungeons();
     res.json(result);
@@ -185,6 +240,7 @@ router.post('/populate-dungeons', async (req, res) => {
 });
 
 router.post('/populate-seasons', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-seasons`);
   try {
     const result = await populateSeasons();
     res.json(result);
@@ -194,6 +250,7 @@ router.post('/populate-seasons', async (req, res) => {
 });
 
 router.post('/populate-periods', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-periods`);
   try {
     const result = await populatePeriods();
     res.json(result);
@@ -203,6 +260,7 @@ router.post('/populate-periods', async (req, res) => {
 });
 
 router.post('/populate-realms', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-realms`);
   try {
     const result = await populateRealms();
     res.json(result);
@@ -211,84 +269,43 @@ router.post('/populate-realms', async (req, res) => {
   }
 });
 
-// --- Admin import endpoint ---
-router.post('/import-leaderboard-json', async (req, res) => {
+// POST /admin/populate-all-parallel - Run all populate functions in parallel
+router.post('/populate-all-parallel', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/populate-all-parallel`);
   try {
-    const { filename } = req.body;
-    if (!filename) {
-      return res.status(400).json({ status: 'NOT OK', error: 'filename is required in body' });
-    }
-    const filePath = path.join(__dirname, '../output', filename);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ status: 'NOT OK', error: 'File not found' });
-    }
-    const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    console.log(`[IMPORT] Starting import for file: ${filename}`);
-    console.log(`[IMPORT] Runs to import: ${runs.length}`);
-    const pool = db.pool;
-    const client = await pool.connect();
-    let inserted = 0;
-    try {
-      await client.query('BEGIN');
-      // 1. Insert all runs, collect runIds and members
-      let runIdToMembers = [];
-      for (const run of runs) {
-        const runGuid = run.run_guid;
-        const runInsert = await client.query(
-          `INSERT INTO leaderboard_run
-            (dungeon_id, period_id, realm_id, season_id, region, completed_at, duration_ms, keystone_level, score, rank, run_guid)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-           ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
-           DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank
-           RETURNING id`,
-          [run.dungeon_id, run.period_id, run.realm_id, run.season_id, run.region, run.completed_at, run.duration_ms, run.keystone_level, run.score, run.rank, runGuid]
-        );
-        const runId = runInsert.rows[0].id;
-        if (run.members && run.members.length > 0) {
-          runIdToMembers.push({ runId, members: run.members });
-        }
-        inserted++;
-      }
-      // 2. Batch insert all run_group_member records
-      let allMembers = [];
-      for (const { runId, members } of runIdToMembers) {
-        for (const m of members) {
-          const memberRunGuid = run.run_guid;
-          allMembers.push([runId, m.character_name, m.class_id, m.spec_id, m.role, memberRunGuid]);
-        }
-      }
-      const batchSize = 500;
-      for (let i = 0; i < allMembers.length; i += batchSize) {
-        let batch = allMembers.slice(i, i + batchSize);
-        batch = dedupeRunGroupMembers(batch);
-        if (batch.length === 0) continue;
-        const values = [];
-        const placeholders = [];
-        let idx = 1;
-        for (const row of batch) {
-          placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
-          values.push(...row);
-        }
-        await client.query(
-          `INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role, run_guid)
-           VALUES ${placeholders.join(',')}
-           ON CONFLICT (run_id, character_name) DO UPDATE SET
-             class_id = EXCLUDED.class_id,
-             spec_id = EXCLUDED.spec_id,
-             role = EXCLUDED.role;`,
-          values
-        );
-      }
-      await client.query('COMMIT');
-      console.log(`[IMPORT] Import complete for file: ${filename}`);
-    } catch (err) {
-      await client.query('ROLLBACK');
-      console.error('[IMPORT ERROR]', err);
-      throw err;
-    } finally {
-      client.release();
-    }
-    res.json({ status: 'OK', inserted });
+    const startTime = Date.now();
+    
+    // Run all populate functions in parallel
+    const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+      populateDungeons(),
+      populateSeasons(),
+      populatePeriods(),
+      populateRealms()
+    ]);
+
+    const duration = Date.now() - startTime;
+    
+    // Process results
+    const results = {
+      dungeons: dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : { status: 'ERROR', error: dungeonsResult.reason.message },
+      seasons: seasonsResult.status === 'fulfilled' ? seasonsResult.value : { status: 'ERROR', error: seasonsResult.reason.message },
+      periods: periodsResult.status === 'fulfilled' ? periodsResult.value : { status: 'ERROR', error: periodsResult.reason.message },
+      realms: realmsResult.status === 'fulfilled' ? realmsResult.value : { status: 'ERROR', error: realmsResult.reason.message }
+    };
+
+    // Count successes and failures
+    const successful = Object.values(results).filter(r => r.status === 'OK').length;
+    const failed = Object.values(results).filter(r => r.status === 'ERROR').length;
+
+    res.json({
+      status: failed === 0 ? 'OK' : 'PARTIAL',
+      message: `Parallel population completed in ${duration}ms`,
+      duration_ms: duration,
+      successful,
+      failed,
+      results
+    });
+
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
@@ -304,6 +321,7 @@ function printFileImportProgress(current, total) {
 }
 // --- Admin import all endpoint ---
 router.post('/import-all-leaderboard-json', async (req, res) => {
+  console.log(`🔐 [ADMIN] POST /admin/import-all-leaderboard-json`);
   try {
     const outputDir = path.join(__dirname, '../output');
     if (!fs.existsSync(outputDir)) {
@@ -313,29 +331,60 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
     if (files.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
     }
+    
+    console.log(`[IMPORT ALL] Starting bulk import for ${files.length} files...`);
     let totalRuns = 0;
     let totalMembers = 0;
     let results = [];
-    const limit = pLimit(8); // Limit to 4 files in parallel
+    
+    // Use a single connection pool with higher limits
+    const pool = db.pool;
+    const limit = pLimit(4); // Reduced from 8 to 4 for better memory management
     let completed = 0;
     const totalFiles = files.length;
+    
     const fileTasks = files.map(filename => limit(async () => {
-      //console.log(`[IMPORT ALL] Processing file: ${filename}`);
       const filePath = path.join(outputDir, filename);
       const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      const pool = db.pool;
       const client = await pool.connect();
       let inserted = 0;
+      
       try {
         await client.query('BEGIN');
-        // 1. Insert all runs, collect runGuids for successful inserts
-        let runGuids = runs.map(run => run.run_guid);
-        const runValues = [];
-        const runPlaceholders = [];
-        let runIdx = 1;
+        
+        // Create temporary tables for this file's processing
+        await client.query(`
+          CREATE TEMP TABLE temp_leaderboard_runs (
+            region VARCHAR(8),
+            season_id INTEGER,
+            period_id INTEGER,
+            dungeon_id INTEGER,
+            realm_id INTEGER,
+            completed_at TIMESTAMP,
+            duration_ms INTEGER,
+            keystone_level INTEGER,
+            score DOUBLE PRECISION,
+            rank INTEGER,
+            run_guid UUID
+          ) ON COMMIT DROP;
+        `);
+        
+        await client.query(`
+          CREATE TEMP TABLE temp_run_group_members (
+            run_guid UUID,
+            character_name VARCHAR(64),
+            class_id INTEGER,
+            spec_id INTEGER,
+            role VARCHAR(16)
+          ) ON COMMIT DROP;
+        `);
+        
+        // 1. Bulk insert runs into temporary table using COPY
+        const runsCsvPath = path.join(os.tmpdir(), `runs-${filename}-${Date.now()}.csv`);
+        const runsCsv = fs.createWriteStream(runsCsvPath);
+        
         for (const run of runs) {
-          runPlaceholders.push(`($${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++},$${runIdx++})`);
-          runValues.push(
+          runsCsv.write([
             run.region,
             run.season_id,
             run.period_id,
@@ -347,64 +396,122 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
             run.score,
             run.rank,
             run.run_guid
-          );
+          ].map(x => x === undefined ? '' : x).join(',') + '\n');
         }
-        if (runValues.length > 0) {
-          await client.query(
-            `INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
-             VALUES ${runPlaceholders.join(',')}
-             ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
-             DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id;`,
-            runValues
-          );
+        runsCsv.end();
+        
+        // Wait for file to be written and check it exists
+        await new Promise((resolve, reject) => {
+          runsCsv.on('finish', resolve);
+          runsCsv.on('error', reject);
+        });
+        
+        // Verify file exists before proceeding
+        if (!fs.existsSync(runsCsvPath)) {
+          throw new Error(`Failed to create temporary file: ${runsCsvPath}`);
         }
-        // 2. Query for present run_guids
+        
+        await new Promise((resolve, reject) => {
+          const stream = client.query(copyFrom(`COPY temp_leaderboard_runs FROM STDIN WITH (FORMAT csv)`));
+          const fileStream = fs.createReadStream(runsCsvPath);
+          pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+        });
+        
+        // 2. Insert runs from temp table to main table with conflict resolution
+        await client.query(`
+          INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+          SELECT region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid
+          FROM temp_leaderboard_runs
+          ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+          DO UPDATE SET score = EXCLUDED.score, rank = EXCLUDED.rank, realm_id = EXCLUDED.realm_id;
+        `);
+        
+        // 3. Get successful run_guids for member insertion
         const { rows } = await client.query(
-          'SELECT run_guid FROM leaderboard_run WHERE run_guid = ANY($1)',
-          [runGuids]
+          'SELECT run_guid FROM leaderboard_run WHERE run_guid IN (SELECT run_guid FROM temp_leaderboard_runs)'
         );
-        const presentRunGuids = new Set(rows.map(r => r.run_guid));
-        // 3. Batch insert all run_group_member records for present run_guids
-        let allMembers = [];
+        const successfulRunGuids = new Set(rows.map(r => r.run_guid));
+        
+        // 4. Bulk insert members into temporary table using COPY
+        const membersCsvPath = path.join(os.tmpdir(), `members-${filename}-${Date.now()}.csv`);
+        const membersCsv = fs.createWriteStream(membersCsvPath);
+        
+        let memberCount = 0;
+        let unknownCount = 0;
         for (const run of runs) {
-          if (run.members && run.members.length > 0 && presentRunGuids.has(run.run_guid)) {
+          if (run.members && run.members.length > 0 && successfulRunGuids.has(run.run_guid)) {
             for (const m of run.members) {
-              allMembers.push([run.run_guid, m.character_name, m.class_id, m.spec_id, m.role]);
+              // Use 'unknown' for null or empty character names
+              const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
+              if (characterName === 'unknown') {
+                unknownCount++;
+              }
+              membersCsv.write([
+                run.run_guid,
+                characterName,
+                m.class_id,
+                m.spec_id,
+                m.role
+              ].map(x => x === undefined ? '' : x).join(',') + '\n');
+              memberCount++;
             }
           }
         }
-        const batchSize = 500;
-        for (let i = 0; i < allMembers.length; i += batchSize) {
-          let batch = allMembers.slice(i, i + batchSize);
-          // Deduplicate using run_guid, character_name
-          const seen = new Set();
-          batch = batch.filter(row => {
-            const key = `${row[0]}|${row[1]}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
-          if (batch.length === 0) continue;
-          const values = [];
-          const placeholders = [];
-          let idx = 1;
-          for (const row of batch) {
-            placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
-            values.push(...row);
-          }
-          await client.query(
-            `INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
-             VALUES ${placeholders.join(',')}
-             ON CONFLICT (run_guid, character_name) DO UPDATE SET
-               class_id = EXCLUDED.class_id,
-               spec_id = EXCLUDED.spec_id,
-               role = EXCLUDED.role;`,
-            values
-          );
+        if (unknownCount > 0) {
+          console.log(`[IMPORT ALL] Used 'unknown' for ${unknownCount} members with null/empty character names`);
         }
+        membersCsv.end();
+        
+        // Wait for file to be written and check it exists
+        if (memberCount > 0) {
+          await new Promise((resolve, reject) => {
+            membersCsv.on('finish', resolve);
+            membersCsv.on('error', reject);
+          });
+          
+          // Verify file exists before proceeding
+          if (!fs.existsSync(membersCsvPath)) {
+            throw new Error(`Failed to create temporary file: ${membersCsvPath}`);
+          }
+        }
+        
+        if (memberCount > 0) {
+          await new Promise((resolve, reject) => {
+            const stream = client.query(copyFrom(`COPY temp_run_group_members FROM STDIN WITH (FORMAT csv)`));
+            const fileStream = fs.createReadStream(membersCsvPath);
+            pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+          });
+          
+          // 5. Insert members from temp table to main table with deduplication
+          await client.query(`
+            INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
+            SELECT DISTINCT ON (run_guid, character_name) run_guid, character_name, class_id, spec_id, role
+            FROM temp_run_group_members
+            ON CONFLICT (run_guid, character_name) DO UPDATE SET
+              class_id = EXCLUDED.class_id,
+              spec_id = EXCLUDED.spec_id,
+              role = EXCLUDED.role;
+          `);
+        }
+        
         await client.query('COMMIT');
-        //console.log(`[IMPORT ALL] Import complete for file: ${filename}`);
-        return { filename, runs: runs.length, members: allMembers.length };
+        
+        // Clean up temporary files
+        try {
+          fs.unlinkSync(runsCsvPath);
+        } catch (err) {
+          console.warn(`Warning: Could not delete temporary file ${runsCsvPath}:`, err.message);
+        }
+        if (memberCount > 0) {
+          try {
+            fs.unlinkSync(membersCsvPath);
+          } catch (err) {
+            console.warn(`Warning: Could not delete temporary file ${membersCsvPath}:`, err.message);
+          }
+        }
+        
+        return { filename, runs: runs.length, members: memberCount };
+        
       } catch (err) {
         await client.query('ROLLBACK');
         console.error(`[IMPORT ALL ERROR] File: ${filename}`, err);
@@ -415,7 +522,9 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         printFileImportProgress(completed, totalFiles);
       }
     }));
+    
     const settled = await Promise.allSettled(fileTasks);
+    
     for (const result of settled) {
       if (result.status === 'fulfilled' && result.value && (result.value.runs || result.value.members)) {
         totalRuns += result.value.runs || 0;
@@ -427,14 +536,18 @@ router.post('/import-all-leaderboard-json', async (req, res) => {
         results.push({ error: result.reason && result.reason.message });
       }
     }
+    
+    console.log(`[IMPORT ALL] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
     res.json({ status: 'OK', totalRuns, totalMembers, results });
+    
   } catch (error) {
+    console.error('[IMPORT ALL ERROR]', error);
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
 
-// --- Bulk COPY import endpoint ---
-router.post('/import-leaderboard-copy', async (req, res) => {
+// --- Optimized version of import-all endpoint for large datasets ---
+router.post('/import-all-leaderboard-json-fast', async (req, res) => {
   try {
     const outputDir = path.join(__dirname, '../output');
     if (!fs.existsSync(outputDir)) {
@@ -444,148 +557,220 @@ router.post('/import-leaderboard-copy', async (req, res) => {
     if (files.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
     }
-    console.log(`[COPY IMPORT] Starting bulk import for ${files.length} files...`);
+
+    console.log(`[IMPORT ALL FAST] Starting optimized bulk import for ${files.length} files...`);
     let totalRuns = 0;
     let totalMembers = 0;
     let results = [];
+
+    // Use a single connection pool with higher limits
     const pool = db.pool;
+    const BATCH_SIZE = 50; // Process 50 files per batch
+    const CONCURRENT_TASKS = 8; // Increased from 4 to 8 for better throughput
+    const limit = pLimit(CONCURRENT_TASKS);
+
     let completed = 0;
-    // Deduplicate runs across all files before writing CSVs
-    const allRuns = [];
-    const allMembers = [];
-    const runKeySet = new Set();
-    for (const filename of files) {
-      const filePath = path.join(outputDir, filename);
-      const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      for (const run of runs) {
-        const key = [
-          run.dungeon_id,
-          run.period_id,
-          run.season_id,
-          run.region,
-          run.completed_at,
-          run.duration_ms,
-          run.keystone_level,
-          run.score
-        ].join('|');
-        if (!runKeySet.has(key)) {
-          runKeySet.add(key);
-          allRuns.push({ run, filename });
-          if (run.members && run.members.length > 0) {
-            for (const m of run.members) {
-              allMembers.push({ member: m, run_guid: run.run_guid });
-            }
-          }
-        }
-      }
-    }
-    // Now write deduplicated runs and members to CSVs and import as before
-    for (const filename of files) {
-      // Filter allRuns for this file
-      const runsForFile = allRuns.filter(obj => obj.filename === filename).map(obj => obj.run);
-      const filePath = path.join(outputDir, filename);
-      const runsCsvPath = path.join(os.tmpdir(), `runs-${filename}.csv`);
-      const membersCsvPath = path.join(os.tmpdir(), `members-${filename}.csv`);
-      const runsCsv = fs.createWriteStream(runsCsvPath);
-      const membersCsv = fs.createWriteStream(membersCsvPath);
-      let runRows = 0;
-      let memberRows = 0;
-      for (const run of runsForFile) {
-        runsCsv.write([
-          run.region,
-          run.season_id,
-          run.period_id,
-          run.dungeon_id,
-          run.realm_id,
-          run.completed_at,
-          run.duration_ms,
-          run.keystone_level,
-          run.score,
-          run.rank,
-          run.run_guid
-        ].map(x => x === undefined ? '' : x).join(',') + '\n');
-        runRows++;
-        if (run.members && run.members.length > 0) {
-          for (const m of run.members) {
-            membersCsv.write([
-              m.character_name,
-              m.class_id,
-              m.spec_id,
-              m.role,
+    const totalFiles = files.length;
+
+    // Process files in batches
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batchFiles = files.slice(i, i + BATCH_SIZE);
+      console.log(`[IMPORT ALL FAST] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(files.length/BATCH_SIZE)}`);
+
+      // Create a single temporary CSV for the entire batch
+      const batchRunsCsvPath = path.join(os.tmpdir(), `batch-runs-${Date.now()}.csv`);
+      const batchMembersCsvPath = path.join(os.tmpdir(), `batch-members-${Date.now()}.csv`);
+      const batchRunsCsv = fs.createWriteStream(batchRunsCsvPath);
+      const batchMembersCsv = fs.createWriteStream(batchMembersCsvPath);
+
+      // Process each file in the batch concurrently
+      const batchTasks = batchFiles.map(filename => limit(async () => {
+        const filePath = path.join(outputDir, filename);
+        let fileRuns = 0;
+        let fileMembers = 0;
+
+        try {
+          const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          fileRuns = runs.length;
+
+          // Write runs to the batch CSV
+          for (const run of runs) {
+            batchRunsCsv.write([
+              run.region,
+              run.season_id,
+              run.period_id,
+              run.dungeon_id,
+              run.realm_id,
+              run.completed_at,
+              run.duration_ms,
+              run.keystone_level,
+              run.score,
+              run.rank,
               run.run_guid
             ].map(x => x === undefined ? '' : x).join(',') + '\n');
-            memberRows++;
+
+            // Write members to the batch CSV
+            if (run.members && run.members.length > 0) {
+              for (const m of run.members) {
+                // Use 'unknown' for null or empty character names
+                const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
+                batchMembersCsv.write([
+                  run.run_guid,
+                  characterName,
+                  m.class_id,
+                  m.spec_id,
+                  m.role
+                ].map(x => x === undefined ? '' : x).join(',') + '\n');
+                fileMembers++;
+              }
+            }
           }
+
+          completed++;
+          printFileImportProgress(completed, totalFiles);
+          return { filename, runs: fileRuns, members: fileMembers };
+
+        } catch (err) {
+          console.error(`[IMPORT ALL FAST ERROR] File: ${filename}`, err);
+          return { filename, error: err.message };
         }
-      }
-      runsCsv.end();
-      membersCsv.end();
+      }));
+
+      // Wait for all files in the batch to be processed
+      const batchResults = await Promise.allSettled(batchTasks);
+      
+      // Close the CSV streams
+      batchRunsCsv.end();
+      batchMembersCsv.end();
+
+      // Wait for CSV files to be fully written
       await Promise.all([
-        new Promise(resolve => runsCsv.on('finish', resolve)),
-        new Promise(resolve => membersCsv.on('finish', resolve))
+        new Promise(resolve => batchRunsCsv.on('finish', resolve)),
+        new Promise(resolve => batchMembersCsv.on('finish', resolve))
       ]);
+
+      // Now process the entire batch in a single transaction
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await new Promise((resolve, reject) => {
-          const stream = client.query(copyFrom(`COPY leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid) FROM STDIN WITH (FORMAT csv)`));
-          const fileStream = fs.createReadStream(runsCsvPath);
-          pipeline(fileStream, stream, err => err ? reject(err) : resolve());
-        });
-        // COPY to staging table instead of run_group_member
-        await new Promise((resolve, reject) => {
-          const stream = client.query(copyFrom(`COPY run_group_member_staging (character_name, class_id, spec_id, role, run_guid) FROM STDIN WITH (FORMAT csv)`));
-          const fileStream = fs.createReadStream(membersCsvPath);
-          pipeline(fileStream, stream, err => err ? reject(err) : resolve());
-        });
-        // Upsert from staging to real table
+
+        // Create temporary tables for this batch
+        await client.query(`
+          CREATE TEMP TABLE temp_leaderboard_runs (
+            region VARCHAR(8),
+            season_id INTEGER,
+            period_id INTEGER,
+            dungeon_id INTEGER,
+            realm_id INTEGER,
+            completed_at TIMESTAMP,
+            duration_ms INTEGER,
+            keystone_level INTEGER,
+            score DOUBLE PRECISION,
+            rank INTEGER,
+            run_guid UUID
+          ) ON COMMIT DROP;
+        `);
+
+        await client.query(`
+          CREATE TEMP TABLE temp_run_group_members (
+            run_guid UUID,
+            character_name VARCHAR(64),
+            class_id INTEGER,
+            spec_id INTEGER,
+            role VARCHAR(16)
+          ) ON COMMIT DROP;
+        `);
+
+        // Bulk copy the batch data
+        await Promise.all([
+          new Promise((resolve, reject) => {
+            const stream = client.query(copyFrom('COPY temp_leaderboard_runs FROM STDIN WITH (FORMAT csv)'));
+            const fileStream = fs.createReadStream(batchRunsCsvPath);
+            pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+          }),
+          new Promise((resolve, reject) => {
+            const stream = client.query(copyFrom('COPY temp_run_group_members FROM STDIN WITH (FORMAT csv)'));
+            const fileStream = fs.createReadStream(batchMembersCsvPath);
+            pipeline(fileStream, stream, err => err ? reject(err) : resolve());
+          })
+        ]);
+
+        // Insert runs from temp table using a more efficient query
+        await client.query(`
+          INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
+          SELECT DISTINCT ON (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+            region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid
+          FROM temp_leaderboard_runs
+          ON CONFLICT (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
+          DO UPDATE SET 
+            score = EXCLUDED.score,
+            rank = EXCLUDED.rank,
+            realm_id = EXCLUDED.realm_id;
+        `);
+
+        // Insert members with better deduplication
         await client.query(`
           INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
-          SELECT DISTINCT ON (run_guid, character_name) run_guid, character_name, class_id, spec_id, role
-          FROM run_group_member_staging
-          ON CONFLICT (run_guid, character_name) DO UPDATE SET
+          SELECT DISTINCT ON (run_guid, character_name) 
+            run_guid, character_name, class_id, spec_id, role
+          FROM temp_run_group_members
+          WHERE run_guid IN (SELECT run_guid FROM leaderboard_run)
+          ON CONFLICT (run_guid, character_name) 
+          DO UPDATE SET
             class_id = EXCLUDED.class_id,
             spec_id = EXCLUDED.spec_id,
             role = EXCLUDED.role;
         `);
-        // Truncate staging table
-        await client.query('TRUNCATE run_group_member_staging;');
+
         await client.query('COMMIT');
-        //console.log(`[COPY IMPORT] File complete: ${filename} (runs: ${runRows}, members: ${memberRows})`);
-        results.push({ filename, runs: runRows, members: memberRows });
-        totalRuns += runRows;
-        totalMembers += memberRows;
+
+        // Update totals and results
+        for (const result of batchResults) {
+          if (result.status === 'fulfilled' && result.value && (result.value.runs || result.value.members)) {
+            totalRuns += result.value.runs || 0;
+            totalMembers += result.value.members || 0;
+            results.push(result.value);
+          } else if (result.status === 'fulfilled') {
+            results.push(result.value);
+          } else {
+            results.push({ error: result.reason && result.reason.message });
+          }
+        }
+
       } catch (err) {
         await client.query('ROLLBACK');
-        console.error(`[COPY IMPORT ERROR] File: ${filename} error: ${err.message}`);
-        results.push({ filename, error: err.message });
+        console.error(`[IMPORT ALL FAST ERROR] Batch processing error:`, err);
+        throw err;
       } finally {
         client.release();
-        fs.unlinkSync(runsCsvPath);
-        fs.unlinkSync(membersCsvPath);
-        completed++;
-        const percent = Math.min((completed / files.length) * 100, 100).toFixed(1);
-        const barLength = 20;
-        const filled = Math.min(Math.round((completed / files.length) * barLength), barLength);
-        const empty = Math.max(barLength - filled, 0);
-        const bar = '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
-        console.log(`[COPY IMPORT] Progress: ${bar} ${completed}/${files.length} files (${percent}%)`);
+
+        // Clean up batch CSV files
+        try {
+          fs.unlinkSync(batchRunsCsvPath);
+          fs.unlinkSync(batchMembersCsvPath);
+        } catch (err) {
+          console.warn(`[IMPORT ALL FAST] Warning: Could not delete temporary files:`, err.message);
+        }
       }
     }
-    console.log(`[COPY IMPORT] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
+
+    console.log(`[IMPORT ALL FAST] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
     res.json({ status: 'OK', totalRuns, totalMembers, results });
+
   } catch (error) {
-    console.error('[COPY IMPORT ERROR]', error);
+    console.error('[IMPORT ALL FAST ERROR]', error);
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
 
 // Cleanup endpoint: keep only top 1000 runs per (dungeon_id, period_id, season_id)
+// Optimized with CTE for better performance
 router.post('/cleanup-leaderboard', async (req, res) => {
   const { season_id } = req.body || {};
+  
+  // Use CTE approach for better performance (Strategy #2)
   let sql = `
-    DELETE FROM leaderboard_run
-    WHERE id IN (
+    WITH to_delete AS (
       SELECT id FROM (
         SELECT
           id,
@@ -595,16 +780,32 @@ router.post('/cleanup-leaderboard', async (req, res) => {
           ) AS rn
         FROM leaderboard_run
         ${season_id ? 'WHERE season_id = $1' : ''}
-      ) sub
+      ) ranked
       WHERE rn > 1000
-    );
+    )
+    DELETE FROM leaderboard_run
+    WHERE id IN (SELECT id FROM to_delete);
   `;
+  
   try {
+    console.log(`[CLEANUP] Starting cleanup for ${season_id ? `season_id = ${season_id}` : 'all seasons'}`);
+    const startTime = Date.now();
+    
     const result = season_id
       ? await db.pool.query(sql, [season_id])
       : await db.pool.query(sql);
-    res.json({ status: 'OK', rows_deleted: result.rowCount });
+    
+    const duration = Date.now() - startTime;
+    console.log(`[CLEANUP] Completed in ${duration}ms. Deleted ${result.rowCount} rows.`);
+    
+    res.json({ 
+      status: 'OK', 
+      rows_deleted: result.rowCount,
+      duration_ms: duration,
+      message: `Deleted ${result.rowCount} rows in ${duration}ms`
+    });
   } catch (err) {
+    console.error('[CLEANUP ERROR]', err);
     res.status(500).json({ status: 'ERROR', error: err.message });
   }
 });
@@ -612,9 +813,6 @@ router.post('/cleanup-leaderboard', async (req, res) => {
 // --- Clear output directory endpoint ---
 router.post('/clear-output', async (req, res) => {
   const outputDir = path.join(__dirname, '../output');
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ status: 'NOT OK', error: 'Not allowed in production' });
-  }
   if (!fs.existsSync(outputDir)) {
     return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
   }
@@ -636,11 +834,407 @@ router.post('/clear-output', async (req, res) => {
 // --- Refresh materialized views endpoint ---
 router.post('/refresh-views', async (req, res) => {
   try {
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_group;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_global;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_period;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW top_keys_per_dungeon;');
+    // Use CONCURRENTLY refresh to allow views to remain available during refresh
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_group;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_global;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_period;');
+    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_dungeon;');
     res.json({ status: 'OK', message: 'All materialized views refreshed.' });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// --- Automation endpoints for Render.com ---
+
+// POST /admin/automation/trigger - Trigger the full daily automation
+router.post('/automation/trigger', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Manual trigger received');
+    
+    // Run the automation in the background
+    automation.runDailyAutomation()
+      .then(result => {
+        console.log('[AUTOMATION] Background automation completed:', result.status);
+      })
+      .catch(error => {
+        console.error('[AUTOMATION] Background automation failed:', error);
+      });
+    
+    // Return immediately to avoid timeout
+    res.json({ 
+      status: 'OK', 
+      message: 'Automation started in background',
+      note: 'Check logs for progress and completion status'
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/trigger-sync - Trigger automation synchronously (for testing)
+router.post('/automation/trigger-sync', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Synchronous trigger received');
+    
+    const result = await automation.runDailyAutomation();
+    
+    res.json({
+      status: result.status === 'success' ? 'OK' : 'NOT OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/automation/status - Check automation status
+router.get('/automation/status', async (req, res) => {
+  try {
+    // This is a simple status endpoint - in a real implementation,
+    // you might want to store automation status in a database
+    res.json({
+      status: 'OK',
+      message: 'Automation system is ready',
+      endpoints: {
+        trigger: 'POST /admin/automation/trigger - Start automation in background',
+        triggerSync: 'POST /admin/automation/trigger-sync - Start automation synchronously',
+        status: 'GET /admin/automation/status - Check this endpoint'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/fetch-data - Trigger only the data fetching step
+router.post('/automation/fetch-data', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Fetch data trigger received');
+    
+    const result = await automation.fetchLeaderboardData();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/import-data - Trigger only the import step
+router.post('/automation/import-data', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Import data trigger received');
+    
+    const result = await automation.importLeaderboardData();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/cleanup - Trigger only the cleanup step
+router.post('/automation/cleanup', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Cleanup trigger received');
+    
+    const { season_id } = req.body || {};
+    if (!season_id) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'season_id is required in request body' 
+      });
+    }
+    
+    const result = await automation.cleanupLeaderboard(season_id);
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/automation/refresh-views - Trigger only the refresh views step
+router.post('/automation/refresh-views', async (req, res) => {
+  try {
+    console.log('[AUTOMATION] Refresh views trigger received');
+    
+    const result = await automation.refreshViews();
+    
+    res.json({
+      status: 'OK',
+      result: result
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/vacuum-full - Perform VACUUM FULL on the database (intensive operation)
+router.post('/vacuum-full', async (req, res) => {
+  try {
+    console.log('[ADMIN] VACUUM FULL started');
+    
+    // Set a longer timeout for VACUUM operations
+    const client = await db.pool.connect();
+    try {
+      // Set statement timeout to 30 minutes for VACUUM operations
+      await client.query('SET statement_timeout = 21600000'); // 6 hours
+      
+      // VACUUM FULL requires exclusive access and can take a very long time
+      // It reclaims all available disk space and defragments tables
+      const result = await client.query('VACUUM FULL');
+      
+      console.log('[ADMIN] VACUUM FULL completed');
+      
+      res.json({
+        status: 'OK',
+        message: 'VACUUM FULL completed successfully',
+        result: result
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('[ADMIN ERROR] VACUUM FULL failed:', error.message);
+    res.status(500).json({ 
+      status: 'NOT OK', 
+      error: error.message,
+      note: 'VACUUM FULL is very intensive and may timeout. Consider using /admin/vacuum-analyze for safer operation'
+    });
+  }
+});
+
+// POST /admin/vacuum-analyze - Perform VACUUM ANALYZE on the database
+router.post('/vacuum-analyze', async (req, res) => {
+  try {
+    console.log('[ADMIN] VACUUM ANALYZE started');
+    
+    // Set a longer timeout for VACUUM operations
+    const client = await db.pool.connect();
+    try {
+      // Set statement timeout to 30 minutes for VACUUM operations
+      await client.query('SET statement_timeout = 21600000'); // 6 hours
+      
+      // VACUUM ANALYZE updates statistics and reclaims some space
+      // It doesn't require exclusive access and won't block other operations
+      const result = await client.query('VACUUM ANALYZE');
+      
+      console.log('[ADMIN] VACUUM ANALYZE completed');
+      
+      res.json({
+        status: 'OK',
+        message: 'VACUUM ANALYZE completed successfully',
+        result: result
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('[ADMIN ERROR] VACUUM ANALYZE failed:', error.message);
+    res.status(500).json({ 
+      status: 'NOT OK', 
+      error: error.message,
+      note: 'If this operation times out, consider running it during low-traffic periods'
+    });
+  }
+});
+
+// --- Database monitoring endpoints ---
+
+// GET /admin/db/stats - Get database performance statistics
+router.get('/db/stats', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    
+    try {
+      // Get connection pool stats
+      const poolStats = {
+        totalCount: db.pool.totalCount,
+        idleCount: db.pool.idleCount,
+        waitingCount: db.pool.waitingCount
+      };
+
+      // Get PostgreSQL server stats
+      const serverStats = await client.query(`
+        SELECT 
+          version(),
+          current_setting('max_connections')::int as max_connections,
+          current_setting('shared_buffers') as shared_buffers,
+          current_setting('work_mem') as work_mem,
+          current_setting('maintenance_work_mem') as maintenance_work_mem,
+          current_setting('effective_cache_size') as effective_cache_size
+      `);
+
+      // Get active connections
+      const activeConnections = await client.query(`
+        SELECT 
+          count(*) as active_connections,
+          count(*) filter (where state = 'active') as active_queries,
+          count(*) filter (where state = 'idle') as idle_connections,
+          count(*) filter (where state = 'idle in transaction') as idle_in_transaction
+        FROM pg_stat_activity 
+        WHERE datname = current_database()
+      `);
+
+      // Get table sizes
+      const tableSizes = await client.query(`
+        SELECT 
+          n.nspname as schemaname,
+          c.relname as tablename,
+          pg_size_pretty(pg_total_relation_size(n.nspname||'.'||c.relname)) as size,
+          pg_total_relation_size(n.nspname||'.'||c.relname) as size_bytes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' 
+        AND c.relkind = 'r'  -- Only tables
+        ORDER BY pg_total_relation_size(n.nspname||'.'||c.relname) DESC
+        LIMIT 10
+      `);
+
+      // Get index usage stats
+      const indexStats = await client.query(`
+        SELECT 
+          s.schemaname,
+          s.relname as tablename,
+          s.indexrelname as indexname,
+          s.idx_scan as index_scans,
+          s.idx_tup_read as tuples_read,
+          s.idx_tup_fetch as tuples_fetched
+        FROM pg_stat_all_indexes s
+        JOIN pg_class c ON c.oid = s.relid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+        ORDER BY s.idx_scan DESC 
+        LIMIT 10
+      `);
+
+      // Get slow queries (if pg_stat_statements extension is available)
+      let slowQueries = { rows: [] };
+      try {
+        const slowQueriesResult = await client.query(`
+          SELECT 
+            query,
+            calls,
+            total_time,
+            mean_time,
+            rows
+          FROM pg_stat_statements 
+          ORDER BY total_time DESC 
+          LIMIT 10
+        `);
+        slowQueries = slowQueriesResult;
+      } catch (err) {
+        console.log('pg_stat_statements extension not available, skipping slow queries');
+      }
+
+      res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        pool: poolStats,
+        server: serverStats.rows[0],
+        connections: activeConnections.rows[0],
+        table_sizes: tableSizes.rows,
+        index_stats: indexStats.rows,
+        slow_queries: slowQueries.rows
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/db/performance-test - Run a performance test
+router.get('/db/performance-test', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    const results = {};
+
+    try {
+      // Test 1: Simple query performance
+      const start1 = Date.now();
+      await client.query('SELECT COUNT(*) FROM leaderboard_run');
+      results.simple_count_query_ms = Date.now() - start1;
+
+      // Test 2: Complex query performance
+      const start2 = Date.now();
+      await client.query(`
+        SELECT 
+          dungeon_id, 
+          COUNT(*) as run_count,
+          AVG(keystone_level) as avg_level
+        FROM leaderboard_run 
+        GROUP BY dungeon_id 
+        ORDER BY run_count DESC 
+        LIMIT 10
+      `);
+      results.complex_group_query_ms = Date.now() - start2;
+
+      // Test 3: Index scan performance
+      const start3 = Date.now();
+      await client.query(`
+        SELECT COUNT(*) 
+        FROM leaderboard_run 
+        WHERE season_id = 1 AND period_id = 1
+      `);
+      results.index_scan_query_ms = Date.now() - start3;
+
+      // Test 4: Concurrent connection test
+      const start4 = Date.now();
+      const concurrentQueries = Array(10).fill().map(() => 
+        client.query('SELECT 1')
+      );
+      await Promise.all(concurrentQueries);
+      results.concurrent_queries_ms = Date.now() - start4;
+
+      res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        performance_tests: results
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/db/analyze - Run ANALYZE on all tables
+router.post('/db/analyze', async (req, res) => {
+  try {
+    const client = await db.pool.connect();
+    
+    try {
+      const start = Date.now();
+      await client.query('ANALYZE');
+      const duration = Date.now() - start;
+
+      res.json({
+        status: 'OK',
+        message: 'ANALYZE completed successfully',
+        duration_ms: duration
+      });
+
+    } finally {
+      client.release();
+    }
+
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
@@ -650,4 +1244,4 @@ module.exports = router;
 module.exports.populateDungeons = populateDungeons;
 module.exports.populateSeasons = populateSeasons;
 module.exports.populatePeriods = populatePeriods;
-module.exports.populateRealms = populateRealms; 
+module.exports.populateRealms = populateRealms;

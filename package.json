@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "jest"
+    "test": "jest",
+    "daily-job": "node scripts/job-daily-current-period.js",
+    "weekly-job": "node scripts/job-weekly-previous-period.js"
   },
   "keywords": [
     "blizzard",
@@ -24,12 +26,14 @@
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
     "helmet": "^7.1.0",
+    "p-limit": "^4.0.0",
     "pg": "^8.16.3",
     "pg-copy-streams": "^7.0.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "supertest": "^6.3.4"
   }
 }

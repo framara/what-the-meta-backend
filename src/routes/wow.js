@@ -7,7 +7,44 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../services/db');
 const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
-const pLimit = require('p-limit');
+
+// Try to import p-limit with error handling
+let pLimit;
+try {
+  const pLimitModule = require('p-limit');
+  pLimit = pLimitModule.default || pLimitModule;
+} catch (error) {
+  console.error('[WOW] Failed to import p-limit, using fallback:', error.message);
+  // Fallback implementation
+  pLimit = (concurrency) => {
+    const queue = [];
+    let active = 0;
+    
+    const next = () => {
+      if (queue.length === 0) return;
+      if (active >= concurrency) return;
+      
+      active++;
+      const { fn, resolve, reject } = queue.shift();
+      
+      Promise.resolve().then(fn)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    
+    return (fn) => {
+      return new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    };
+  };
+}
+
 const { v4: uuidv4 } = require('uuid');
 const advancedRouter = require('./advanced');
 
@@ -22,6 +59,7 @@ router.use(validateRegion);
 
 // GET /wow/game-data/achievements
 router.get('/game-data/achievements', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/achievements - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('achievements', region, req.query);
@@ -33,6 +71,7 @@ router.get('/game-data/achievements', async (req, res, next) => {
 
 // Add WoW Token endpoint that we know works
 router.get('/game-data/token', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/token - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('token', region, req.query);
@@ -44,6 +83,7 @@ router.get('/game-data/token', async (req, res, next) => {
 
 // Add missing endpoints
 router.get('/game-data/professions', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/professions - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('professions', region, req.query);
@@ -54,6 +94,7 @@ router.get('/game-data/professions', async (req, res, next) => {
 });
 
 router.get('/game-data/talents', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/talents - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('talents', region, req.query);
@@ -64,6 +105,7 @@ router.get('/game-data/talents', async (req, res, next) => {
 });
 
 router.get('/game-data/pvp-seasons', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/pvp-seasons - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('pvp-seasons', region, req.query);
@@ -74,6 +116,7 @@ router.get('/game-data/pvp-seasons', async (req, res, next) => {
 });
 
 router.get('/game-data/reputations', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/reputations - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('reputations', region, req.query);
@@ -84,6 +127,7 @@ router.get('/game-data/reputations', async (req, res, next) => {
 });
 
 router.get('/game-data/achievement-categories', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/achievement-categories - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('achievement-categories', region, req.query);
@@ -94,6 +138,7 @@ router.get('/game-data/achievement-categories', async (req, res, next) => {
 });
 
 router.get('/game-data/talent-trees', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/talent-trees - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('talent-trees', region, req.query);
@@ -104,6 +149,7 @@ router.get('/game-data/talent-trees', async (req, res, next) => {
 });
 
 router.get('/game-data/reputation-tiers', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/reputation-tiers - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('reputation-tiers', region, req.query);
@@ -136,6 +182,7 @@ router.get('/game-data/item-sets', async (req, res, next) => {
 
 // Add Mythic Keystone Affix endpoints
 router.get('/game-data/keystone-affixes', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/keystone-affixes - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('keystone-affixes', region, req.query);
@@ -147,6 +194,7 @@ router.get('/game-data/keystone-affixes', async (req, res, next) => {
 
 // Add Mythic Keystone Dungeon endpoints
 router.get('/game-data/mythic-keystone', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/mythic-keystone - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await proxyService.getGameData('mythic-keystone', region, req.query);
@@ -202,6 +250,7 @@ router.get('/game-data/mythic-leaderboard-index/:connectedRealmId', async (req, 
 });
 
 router.get('/game-data/mythic-leaderboard/:connectedRealmId/:dungeonId/:periodId', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/game-data/mythic-leaderboard/${req.params.connectedRealmId}/${req.params.dungeonId}/${req.params.periodId} - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { connectedRealmId, dungeonId, periodId } = req.params;
@@ -777,6 +826,7 @@ router.get('/game-data/pets/:id', async (req, res, next) => {
  * Health check for WoW services
  */
 router.get('/health', async (req, res, next) => {
+  console.log(`🎮 [WOW] GET /wow/health - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const isWorking = await proxyService.testProxy(region);

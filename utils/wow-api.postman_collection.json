@@ -17,7 +17,8 @@
     { "key": "dungeonId", "value": "247" },
     { "key": "periodId", "value": "1001" },
     { "key": "seasonId", "value": "14" },
-    { "key": "filename", "value": "eu-s14-p1001-d247.json" }
+    { "key": "filename", "value": "eu-s14-p1001-d247.json" },
+    { "key": "adminApiKey", "value": "your_secure_admin_api_key_here", "description": "Admin API key for protected routes" }
   ],
   "item": [
     {
@@ -60,7 +61,23 @@
         { "name": "Mythic Keystone Season Dungeons", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/dungeons?region={{region}}" } },
         { "name": "Mythic Keystone Season Name", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/mythic-keystone-season/{{seasonId}}/name?region={{region}}" } },
         { "name": "Seasons (All)", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/seasons" } },
-        { "name": "Season Info", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/season-info/{{seasonId}}" } }
+        { "name": "Season Info", "request": { "method": "GET", "url": "{{baseUrl}}/wow/advanced/season-info/{{seasonId}}" } },
+        { 
+          "name": "Mythic Leaderboard Retry", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"failedReasons\": [\n    \"API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded\",\n    \"API Error for us-249-711-1168: No response received for endpoint /data/wow/connected-realm/1168/mythic-leaderboard/249/period/711 in region us: timeout of 10000ms exceeded\"\n  ]\n}",
+              "description": "Retry failed mythic leaderboard requests. Paste the failedReasons array from a previous mythic-leaderboard request response."
+            },
+            "url": "{{baseUrl}}/wow/advanced/mythic-leaderboard-retry",
+            "description": "POST endpoint to retry failed requests based on failedReasons array. Parses each failed reason to extract region, dungeonId, periodId, and connectedRealmId, then retries the API calls and creates JSON files."
+          } 
+        }
       ]
     },
     {
@@ -70,28 +87,280 @@
         { "name": "Top Keys (Period)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&limit=100" } },
         { "name": "Top Keys (Dungeon)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&dungeon_id={{dungeonId}}&limit=100" } },
         { "name": "Top Keys (Group)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys?season_id={{seasonId}}&period_id={{periodId}}&dungeon_id={{dungeonId}}&limit=100" } },
-        { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } }
+        { "name": "Top Keys (All Seasons)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/top-keys-all-seasons", "description": "Aggregates top keys data from all seasons. Returns data for each season with their top 100 keys. No parameters required." } },
+        { "name": "Spec Evolution (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/spec-evolution/{{seasonId}}" } },
+        { "name": "Composition Data (Season)", "request": { "method": "GET", "url": "{{baseUrl}}/meta/composition-data/{{seasonId}}", "description": "Optimized endpoint for group composition analysis. Returns data without character names to reduce payload size." } }
       ]
     },
     {
       "name": "Admin",
       "item": [
-        { "name": "Import Leaderboard JSON", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"filename\": \"{{filename}}\"\n}" }, "url": "{{baseUrl}}/admin/import-leaderboard-json" } },
-        { "name": "Import All Leaderboard JSON", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-all-leaderboard-json" } },
-        { "name": "Import Leaderboard Copy", "request": { "method": "POST", "url": "{{baseUrl}}/admin/import-leaderboard-copy" } },
-        { "name": "Clear Output Directory", "request": { "method": "POST", "url": "{{baseUrl}}/admin/clear-output", "description": "Deletes all files in the ./output directory (not allowed in production)." } },
-        { "name": "Refresh Materialized Views", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "url": "{{baseUrl}}/admin/refresh-views" } },
-        { "name": "Cleanup Leaderboard Runs", "request": {
-          "method": "POST",
-          "header": [
-            { "key": "Content-Type", "value": "application/json" }
-          ],
-          "body": {
-            "mode": "raw",
-            "raw": "{\n  \"season_id\": 14\n}"
-          },
-          "url": "{{baseUrl}}/admin/cleanup-leaderboard",
-          "description": "Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id). Optionally filter by season_id."}
+        { 
+          "name": "Test Admin Authentication", 
+          "request": { 
+            "method": "GET", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/test",
+            "description": "Test endpoint to verify admin authentication is working properly." 
+          } 
+        },
+        { 
+          "name": "Import All Leaderboard JSON", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/import-all-leaderboard-json" 
+          } 
+        },
+        { 
+          "name": "Import All Leaderboard JSON (fast)", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/import-all-leaderboard-json-fast" 
+          } 
+        },
+        { 
+          "name": "Clear Output Directory", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/clear-output",
+            "description": "Deletes all files in the ./output directory (not allowed in production)." 
+          } 
+        },
+        { 
+          "name": "Refresh Materialized Views", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/refresh-views" 
+          } 
+        },
+        { 
+          "name": "Cleanup Leaderboard Runs", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"season_id\": 14\n}"
+            },
+            "url": "{{baseUrl}}/admin/cleanup-leaderboard",
+            "description": "Deletes all but the top 1000 runs per (dungeon_id, period_id, season_id). Optionally filter by season_id."
+          }
+        },
+        { 
+          "name": "Vacuum Full", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/vacuum-full",
+            "description": "Performs VACUUM FULL on the database to reclaim storage and defragment tables. This operation requires exclusive access, can take a very long time (potentially hours), and blocks all other database operations. Use with caution."
+          }
+        },
+        { 
+          "name": "Vacuum Analyze", 
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/vacuum-analyze",
+            "description": "Performs VACUUM ANALYZE on the database to update statistics and reclaim some storage space. This operation is safer than VACUUM FULL as it doesn't require exclusive access and won't block other operations."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Automation",
+      "item": [
+        { 
+          "name": "Trigger Automation (Background)", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/trigger",
+            "description": "Starts the full daily automation process in the background. Returns immediately to avoid timeouts."
+          }
+        },
+        { 
+          "name": "Trigger Automation (Synchronous)", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/trigger-sync",
+            "description": "Starts the full daily automation process synchronously. Use for testing only as it may timeout on long operations."
+          }
+        },
+        { 
+          "name": "Automation Status", 
+          "request": { 
+            "method": "GET", 
+            "header": [
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/admin/automation/status",
+            "description": "Check if the automation system is ready and get available endpoints."
+          }
+        },
+        { 
+          "name": "Fetch Leaderboard Data", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/fetch-data",
+            "description": "Trigger only the data fetching step for all regions."
+          }
+        },
+        { 
+          "name": "Import Leaderboard Data", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/import-data",
+            "description": "Trigger only the import step for JSON files."
+          }
+        },
+        { 
+          "name": "Cleanup Data", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"season_id\": 14\n}"
+            },
+            "url": "{{baseUrl}}/admin/automation/cleanup",
+            "description": "Trigger only the cleanup step. Requires season_id in request body."
+          }
+        },
+        { 
+          "name": "Refresh Views", 
+          "request": { 
+            "method": "POST", 
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Admin-API-Key", "value": "{{adminApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/admin/automation/refresh-views",
+            "description": "Trigger only the materialized views refresh step."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Render One-Off Jobs",
+      "item": [
+        { 
+          "name": "Create One-Off Job", 
+          "request": { 
+            "method": "POST", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startCommand\": \"npm run one-off\"\n}"
+            },
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
+            "description": "Create a one-off job to run the daily automation. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "Get Job Status", 
+          "request": { 
+            "method": "GET", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
+            "description": "Check the status of a one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "List Jobs", 
+          "request": { 
+            "method": "GET", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs",
+            "description": "List all one-off jobs for your service. Replace YOUR_SERVICE_ID and YOUR_RENDER_API_KEY with your actual values."
+          }
+        },
+        { 
+          "name": "Cancel Running Job", 
+          "request": { 
+            "method": "DELETE", 
+            "header": [ 
+              { "key": "Authorization", "value": "Bearer YOUR_RENDER_API_KEY" }
+            ],
+            "url": "https://api.render.com/v1/services/YOUR_SERVICE_ID/jobs/YOUR_JOB_ID",
+            "description": "Cancel a running one-off job. Replace YOUR_SERVICE_ID, YOUR_JOB_ID, and YOUR_RENDER_API_KEY with your actual values."
+          }
         }
       ]
     }

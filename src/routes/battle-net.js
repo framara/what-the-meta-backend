@@ -12,6 +12,7 @@ const router = express.Router();
  * Get OAuth token for a specific region (Application Authentication)
  */
 router.post('/oauth/token', async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] POST /battle-net/oauth/token - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const response = await oauthClient.getClientCredentialsToken(region);
@@ -26,6 +27,7 @@ router.post('/oauth/token', async (req, res, next) => {
  * Get OAuth token info (for debugging - returns our cached token)
  */
 router.get('/oauth/token', validateRegion, async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] GET /battle-net/oauth/token - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     
@@ -49,6 +51,7 @@ router.get('/oauth/token', validateRegion, async (req, res, next) => {
  * Get user information for a specific region (User Authentication)
  */
 router.get('/oauth/userinfo', async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] GET /battle-net/oauth/userinfo - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { access_token } = req.query;
@@ -72,6 +75,7 @@ router.get('/oauth/userinfo', async (req, res, next) => {
  * Validate OAuth token (Token Validation)
  */
 router.post('/oauth/check_token', async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] POST /battle-net/oauth/check_token - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { token } = req.body;
@@ -95,6 +99,7 @@ router.post('/oauth/check_token', async (req, res, next) => {
  * Validate OAuth token (Token Validation)
  */
 router.get('/oauth/check_token', async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] GET /battle-net/oauth/check_token - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { token } = req.query;
@@ -118,6 +123,7 @@ router.get('/oauth/check_token', async (req, res, next) => {
  * Get all supported regions
  */
 router.get('/regions', (req, res) => {
+  console.log(`🌐 [BATTLE-NET] GET /battle-net/regions`);
   const regions = getAllRegions();
   
   res.json({
@@ -133,6 +139,7 @@ router.get('/regions', (req, res) => {
  * Health check for Battle.net services
  */
 router.get('/health', async (req, res, next) => {
+  console.log(`🌐 [BATTLE-NET] GET /battle-net/health`);
   try {
     // Test token generation for US region
     const token = await getAccessToken('us');

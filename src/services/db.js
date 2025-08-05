@@ -6,7 +6,10 @@ const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  max: 10, // Limit pool size
+  max: 20,               // Increased pool size
+  min: 4,                // Minimum idle connections
+  idleTimeoutMillis: 60000,  // Close idle connections after 60s
+  connectionTimeoutMillis: 2000,  // Connection timeout
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 
@@ -49,9 +52,18 @@ async function insertRunGroupMembers(run_id, members) {
   const values = [];
   const placeholders = [];
   let idx = 1;
+  let unknownCount = 0;
   for (const m of members) {
+    // Use 'unknown' for null or empty character names
+    const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
+    if (characterName === 'unknown') {
+      unknownCount++;
+    }
     placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
-    values.push(run_id, m.character_name, m.class_id, m.spec_id, m.role);
+    values.push(run_id, characterName, m.class_id, m.spec_id, m.role);
+  }
+  if (unknownCount > 0) {
+    console.log(`[DB] Used 'unknown' for ${unknownCount} members with null/empty character names for run_id: ${run_id}`);
   }
   const query = `
     INSERT INTO run_group_member (run_id, character_name, class_id, spec_id, role)

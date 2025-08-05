@@ -2,9 +2,90 @@ const express = require('express');
 const proxyService = require('../services/proxy');
 const validateRegion = require('../middleware/region');
 const { SEASON_DUNGEONS, SEASON_NAMES, WOW_DUNGEONS, WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
+
+// Helper: get keystone_upgrades for a dungeonId from WOW_DUNGEONS
+function getKeystoneUpgradesForDungeon(dungeonId) {
+  const dungeon = WOW_DUNGEONS.find(d => d.id === Number(dungeonId));
+  return dungeon && Array.isArray(dungeon.keystone_upgrades) ? dungeon.keystone_upgrades : null;
+}
+
+// Helper: fallback score calculation (Blizzard-like, using keystone level, duration, and keystone_upgrades)
+function calculateFallbackScore(keystoneLevel, keystoneUpgrades, durationMs) {
+  if (!keystoneLevel || !Array.isArray(keystoneUpgrades) || !durationMs) return null;
+  // Sort upgrades by upgrade_level ascending
+  const sorted = [...keystoneUpgrades].sort((a, b) => a.upgrade_level - b.upgrade_level);
+  const timer1 = sorted.find(u => u.upgrade_level === 1)?.qualifying_duration;
+  const timer2 = sorted.find(u => u.upgrade_level === 2)?.qualifying_duration;
+  const timer3 = sorted.find(u => u.upgrade_level === 3)?.qualifying_duration;
+  if (!timer1) return null;
+  // Official base score
+  const base = 60 + (Number(keystoneLevel) * 7.5);
+  let score;
+  // Timed run (under 1-chest)
+  if (durationMs <= timer1) {
+    // Bonus for being under timer, up to 1-chest
+    if (timer2 && durationMs <= timer2) {
+      // 2-chest or better
+      if (timer3 && durationMs <= timer3) {
+        // 3-chest or better: max bonus
+        score = base + 15;
+      } else {
+        // Between 2-chest and 3-chest
+        const bonus = ((timer2 - durationMs) / (timer2 - timer3)) * 7.5;
+        score = base + 7.5 + Math.max(0, bonus);
+      }
+    } else {
+      // Between 1-chest and 2-chest
+      const bonus = ((timer1 - durationMs) / (timer1 - timer2)) * 7.5;
+      score = base + Math.max(0, bonus);
+    }
+  } else {
+    // Depleted run: scale score by timer1/durationMs
+    score = base * (timer1 / durationMs);
+  }
+  // Clamp to minimum 0.01 and round to 5 decimals
+  return Number(Math.max(0.01, score).toFixed(5));
+}
 const fs = require('fs');
 const path = require('path');
-const pLimit = require('p-limit');
+
+// Try to import p-limit with error handling
+let pLimit;
+try {
+  const pLimitModule = require('p-limit');
+  pLimit = pLimitModule.default || pLimitModule;
+} catch (error) {
+  console.error('[ADVANCED] Failed to import p-limit, using fallback:', error.message);
+  // Fallback implementation
+  pLimit = (concurrency) => {
+    const queue = [];
+    let active = 0;
+    
+    const next = () => {
+      if (queue.length === 0) return;
+      if (active >= concurrency) return;
+      
+      active++;
+      const { fn, resolve, reject } = queue.shift();
+      
+      Promise.resolve().then(fn)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    
+    return (fn) => {
+      return new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        next();
+      });
+    };
+  };
+}
+
 const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
@@ -62,6 +143,7 @@ async function fetchWithRetry(fn, maxRetries = 5, delayMs = 1000) {
 
 // /advanced/mythic-leaderboard/index
 router.get('/mythic-leaderboard/index', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/index - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
@@ -86,6 +168,7 @@ router.get('/mythic-leaderboard/index', async (req, res, next) => {
 
 // /advanced/mythic-leaderboard/:dungeonId/period/:period
 router.get('/mythic-leaderboard/:dungeonId/period/:period', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.dungeonId}/period/${req.params.period} - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { dungeonId, period } = req.params;
@@ -117,6 +200,7 @@ router.get('/mythic-leaderboard/:dungeonId/period/:period', async (req, res, nex
 
 // /advanced/mythic-keystone-season/:seasonId/dungeons
 router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-keystone-season/${req.params.seasonId}/dungeons - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { seasonId } = req.params;
@@ -178,6 +262,7 @@ router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) 
 
 // /advanced/mythic-keystone-season/:seasonId/name
 router.get('/mythic-keystone-season/:seasonId/name', async (req, res) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-keystone-season/${req.params.seasonId}/name`);
   const { seasonId } = req.params;
   const name = SEASON_NAMES[seasonId] || null;
   if (name) {
@@ -189,189 +274,459 @@ router.get('/mythic-keystone-season/:seasonId/name', async (req, res) => {
 
 // /advanced/mythic-leaderboard/:seasonId/
 router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.seasonId}/ - Region: ${req.region || 'unknown'}`);
   try {
-    const { region } = req;
+    // Check if region is specified in query params
+    const specifiedRegion = req.query.region;
+    const regionsToProcess = specifiedRegion ? [specifiedRegion.toLowerCase()] : ['us', 'eu', 'kr', 'tw'];
+    
+    // Parse period filtering parameters
+    const fromPeriod = req.query.fromPeriod ? parseInt(req.query.fromPeriod, 10) : null;
+    const toPeriod = req.query.toPeriod ? parseInt(req.query.toPeriod, 10) : null;
+    
+    // Validate period parameters
+    if (fromPeriod && toPeriod && fromPeriod > toPeriod) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'fromPeriod cannot be greater than toPeriod' 
+      });
+    }
+    
     const { seasonId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
     const dungeons = SEASON_DUNGEONS[seasonNum];
     if (!dungeons || dungeons.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
     }
-    const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { ...req.query, id: seasonId });
-    const periodsRaw = seasonResp.data.periods || [];
-    const periods = periodsRaw.map(p => {
-      const href = p && p.key && p.key.href;
-      if (href) {
-        const match = href.match(/period\/(\d+)/);
-        return match ? match[1] : null;
-      }
-      return null;
-    }).filter(Boolean);
-    if (periods.length === 0) {
-      return res.status(404).json({ status: 'NOT OK', error: `No periods found for season ${seasonId}` });
-    }
-    const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
-    const connectedRealms = realmsResp.data.connected_realms || [];
-    const connectedRealmIds = connectedRealms.map(obj => {
-      const match = obj.href.match(/connected-realm\/(\d+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean);
-    const limit = pLimit(10);
-    const tasks = [];
+
     let allFiles = [];
+    let totalFiles = 0;
     let fileCount = 0;
-    const totalFiles = dungeons.length * periods.length * connectedRealmIds.length;
-    for (const dungeonId of dungeons) {
-      for (const periodId of periods) {
-        for (const connectedRealmId of connectedRealmIds) {
-          tasks.push(limit(async () => {
-            try {
-              const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
-              if (lb.data && Array.isArray(lb.data.leading_groups)) {
-                const runs = [];
-                for (const group of lb.data.leading_groups) {
-                  const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
-                  const groupKey = memberIds.join('-');
-                  const run_guid = uuidv4();
-                  runs.push({
-                    dungeon_id: parseInt(dungeonId, 10),
-                    period_id: parseInt(periodId, 10),
-                    realm_id: parseInt(connectedRealmId, 10),
-                    season_id: seasonNum,
-                    region,
-                    completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
-                    duration_ms: group.duration,
-                    keystone_level: group.keystone_level,
-                    score: group.mythic_rating ? group.mythic_rating.rating : null,
-                    rank: group.ranking,
-                    run_guid,
-                    members: group.members.map(member => {
-                      const specId = member.specialization ? member.specialization.id : null;
-                      return {
-                        character_name: member.profile.name,
-                        class_id: getClassIdFromSpecId(specId),
-                        spec_id: specId,
-                        role: getRoleFromSpecId(specId),
-                        run_guid
-                      };
-                    })
-                  });
-                }
-                const outputDir = ensureOutputDir();
-                const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
-                const filePath = path.join(outputDir, fileName);
-                fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
-                allFiles.push(fileName);
-                fileCount++;
-                printProgress(fileCount, totalFiles, `File: ${fileName}`);
-              }
-            } catch (e) {
-              console.error(`[API ERROR] dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
-            }
-          }));
+    let failedCount = 0;
+    let failedReasons = [];
+
+    // Process each region
+    for (const region of regionsToProcess) {
+      try {
+        // Validate region
+        if (!['us', 'eu', 'kr', 'tw'].includes(region)) {
+          console.error(`[INVALID REGION] ${region} is not supported`);
+          failedCount++;
+          failedReasons.push(`Invalid region: ${region}`);
+          continue;
         }
+
+        const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { ...req.query, id: seasonId });
+        const periodsRaw = seasonResp.data.periods || [];
+        let periods = periodsRaw.map(p => {
+          const href = p && p.key && p.key.href;
+          if (href) {
+            const match = href.match(/period\/(\d+)/);
+            return match ? match[1] : null;
+          }
+          return null;
+        }).filter(Boolean);
+        
+        // Apply period filtering if specified
+        if (fromPeriod || toPeriod) {
+          periods = periods.filter(periodId => {
+            const periodNum = parseInt(periodId, 10);
+            if (fromPeriod && periodNum < fromPeriod) return false;
+            if (toPeriod && periodNum > toPeriod) return false;
+            return true;
+          });
+        }
+        
+        if (periods.length === 0) {
+          console.error(`[NO PERIODS] No periods found for season ${seasonId} in region ${region}${fromPeriod || toPeriod ? ` (filtered: fromPeriod=${fromPeriod}, toPeriod=${toPeriod})` : ''}`);
+          failedCount++;
+          failedReasons.push(`No periods found for season ${seasonId} in region ${region}${fromPeriod || toPeriod ? ` (filtered: fromPeriod=${fromPeriod}, toPeriod=${toPeriod})` : ''}`);
+          continue;
+        }
+        const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
+        const connectedRealms = realmsResp.data.connected_realms || [];
+        const connectedRealmIds = connectedRealms.map(obj => {
+          const match = obj.href.match(/connected-realm\/(\d+)/);
+          return match ? match[1] : null;
+        }).filter(Boolean);
+        const limit = pLimit(10);
+        const tasks = [];
+        const regionTotalFiles = dungeons.length * periods.length * connectedRealmIds.length;
+        totalFiles += regionTotalFiles;
+        
+        for (const dungeonId of dungeons) {
+          for (const periodId of periods) {
+            for (const connectedRealmId of connectedRealmIds) {
+              tasks.push(limit(async () => {
+                try {
+                  const lb = await proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId });
+                  if (lb.data && Array.isArray(lb.data.leading_groups)) {
+                    const runs = [];
+                    for (const group of lb.data.leading_groups) {
+                      const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+                      const groupKey = memberIds.join('-');
+                      const run_guid = uuidv4();
+                      runs.push({
+                        dungeon_id: parseInt(dungeonId, 10),
+                        period_id: parseInt(periodId, 10),
+                        realm_id: parseInt(connectedRealmId, 10),
+                        season_id: seasonNum,
+                        region,
+                        completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                        duration_ms: group.duration,
+                        keystone_level: group.keystone_level,
+                        score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
+                          ? group.mythic_rating.rating
+                          : (() => {
+                              const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                              return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                            })(),
+                        rank: group.ranking,
+                        run_guid,
+                        members: group.members.map(member => {
+                          const specId = member.specialization ? member.specialization.id : null;
+                          return {
+                            character_name: member.profile.name,
+                            class_id: getClassIdFromSpecId(specId),
+                            spec_id: specId,
+                            role: getRoleFromSpecId(specId),
+                            run_guid
+                          };
+                        })
+                      });
+                    }
+                    const outputDir = ensureOutputDir();
+                    const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+                    const filePath = path.join(outputDir, fileName);
+                    
+                    // Always create a file, even if empty, to track what was processed
+                    if (runs.length === 0) {
+                      console.log(`[EMPTY DATA] No runs found for ${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}`);
+                      fs.writeFileSync(filePath, JSON.stringify([], null, 2));
+                    } else {
+                      fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+                    }
+                    
+                    allFiles.push(fileName);
+                    fileCount++;
+                    printProgress(fileCount, totalFiles, `File: ${fileName} (${runs.length} runs)`);
+                  }
+                } catch (e) {
+                  console.error(`[API ERROR] region=${region}, dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
+                  failedCount++;
+                  failedReasons.push(`API Error for ${region}-${dungeonId}-${periodId}-${connectedRealmId}: ${e.message}`);
+                }
+              }));
+            }
+          }
+        }
+        await Promise.allSettled(tasks);
+      } catch (e) {
+        console.error(`[REGION ERROR] Failed to process region ${region}:`, e.message);
+        failedCount++;
+        failedReasons.push(`Region ${region}: ${e.message}`);
       }
     }
-    await Promise.allSettled(tasks);
-    const results = await Promise.allSettled(tasks);
-    const failed = results.filter(r => r.status === 'rejected');
-    const succeeded = results.filter(r => r.status === 'fulfilled');
+
+    const succeeded = totalFiles - failedCount;
     res.json({
-      status: failed.length === 0 ? 'OK' : 'PARTIAL',
+      status: failedCount === 0 ? 'OK' : 'PARTIAL',
       message: 'Data written to JSON files',
-      filesWritten: succeeded.length,
+      filesWritten: succeeded,
       filesExpected: totalFiles,
-      failedCount: failed.length,
-      failedReasons: failed.map(f => f.reason ? f.reason.message : f)
+      failedCount: failedCount,
+      failedReasons: failedReasons,
+      regionsProcessed: regionsToProcess,
+      regionsCount: regionsToProcess.length,
+      periodFilter: {
+        fromPeriod: fromPeriod,
+        toPeriod: toPeriod,
+        applied: !!(fromPeriod || toPeriod)
+      }
     });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
 
+// /advanced/mythic-leaderboard-retry
+// POST endpoint to retry failed requests based on failedReasons array
+router.post('/mythic-leaderboard-retry', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] POST /advanced/mythic-leaderboard-retry`);
+  
+  try {
+    const { failedReasons } = req.body;
+    
+    if (!failedReasons || !Array.isArray(failedReasons)) {
+      return res.status(400).json({ 
+        status: 'NOT OK', 
+        error: 'failedReasons array is required in request body' 
+      });
+    }
+
+    let retryCount = 0;
+    let successCount = 0;
+    let failedCount = 0;
+    let failedReasonsNew = [];
+    let allFiles = [];
+
+    // Parse each failed reason to extract the parameters
+    for (const reason of failedReasons) {
+      try {
+        // Parse the error message format: "API Error for us-247-716-1072: No response received for endpoint /data/wow/connected-realm/1072/mythic-leaderboard/247/period/716 in region us: timeout of 10000ms exceeded"
+        const match = reason.match(/API Error for ([a-z]+)-(\d+)-(\d+)-(\d+):/);
+        
+        if (!match) {
+          console.error(`[PARSE ERROR] Could not parse failed reason: ${reason}`);
+          failedCount++;
+          failedReasonsNew.push(`Parse error for: ${reason}`);
+          continue;
+        }
+
+        const [, region, dungeonId, periodId, connectedRealmId] = match;
+        retryCount++;
+
+        console.log(`🔄 [RETRY] Retrying ${region}-${dungeonId}-${periodId}-${connectedRealmId}`);
+
+        try {
+          // Try to determine season from period ID by checking all seasons
+          let seasonId = null;
+          
+          // Check each season to see which one contains this period
+          for (const [seasonKey, dungeons] of Object.entries(SEASON_DUNGEONS)) {
+            const seasonNum = parseInt(seasonKey, 10);
+            try {
+              // Try to get the season data to see if this period belongs to it
+              const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { id: seasonNum });
+              const periodsRaw = seasonResp.data.periods || [];
+              const periods = periodsRaw.map(p => {
+                const href = p && p.key && p.key.href;
+                if (href) {
+                  const match = href.match(/period\/(\d+)/);
+                  return match ? match[1] : null;
+                }
+                return null;
+              }).filter(Boolean);
+              
+              if (periods.includes(periodId)) {
+                seasonId = seasonNum;
+                break;
+              }
+            } catch (seasonError) {
+              // Continue to next season if this one fails
+              continue;
+            }
+          }
+          
+          // If we couldn't determine season, use a fallback based on period ID ranges
+          if (!seasonId) {
+            const periodNum = parseInt(periodId, 10);
+            if (periodNum >= 700 && periodNum <= 800) seasonId = 1; // BFA
+            else if (periodNum >= 800 && periodNum <= 900) seasonId = 5; // SL
+            else if (periodNum >= 900 && periodNum <= 1000) seasonId = 9; // DF
+            else if (periodNum >= 1000) seasonId = 13; // TWW
+            else seasonId = 1; // Default fallback
+          }
+
+          const lb = await proxyService.getGameData('mythic-leaderboard', region, { 
+            connectedRealmId, 
+            dungeonId, 
+            periodId 
+          });
+
+          if (lb.data && Array.isArray(lb.data.leading_groups)) {
+            const runs = [];
+            for (const group of lb.data.leading_groups) {
+              const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+              const groupKey = memberIds.join('-');
+              const run_guid = uuidv4();
+              
+              runs.push({
+                dungeon_id: parseInt(dungeonId, 10),
+                period_id: parseInt(periodId, 10),
+                realm_id: parseInt(connectedRealmId, 10),
+                season_id: seasonId,
+                region,
+                completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                duration_ms: group.duration,
+                keystone_level: group.keystone_level,
+                score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
+                  ? group.mythic_rating.rating
+                  : (() => {
+                      const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                      return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                    })(),
+                rank: group.ranking,
+                run_guid,
+                members: group.members.map(member => {
+                  const specId = member.specialization ? member.specialization.id : null;
+                  return {
+                    character_name: member.profile.name,
+                    class_id: getClassIdFromSpecId(specId),
+                    spec_id: specId,
+                    role: getRoleFromSpecId(specId),
+                    run_guid
+                  };
+                })
+              });
+            }
+
+            const outputDir = ensureOutputDir();
+            const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+            const filePath = path.join(outputDir, fileName);
+            fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+            allFiles.push(fileName);
+            successCount++;
+            console.log(`✅ [SUCCESS] Retry successful for ${fileName}`);
+          }
+        } catch (retryError) {
+          console.error(`[RETRY ERROR] Failed to retry ${region}-${dungeonId}-${periodId}-${connectedRealmId}:`, retryError.message);
+          failedCount++;
+          failedReasonsNew.push(`Retry failed for ${region}-${dungeonId}-${periodId}-${connectedRealmId}: ${retryError.message}`);
+        }
+      } catch (parseError) {
+        console.error(`[PARSE ERROR] Error processing failed reason: ${reason}`, parseError);
+        failedCount++;
+        failedReasonsNew.push(`Parse error for: ${reason}`);
+      }
+    }
+
+    res.json({
+      status: failedCount === 0 ? 'OK' : 'PARTIAL',
+      message: 'Retry operation completed',
+      retryAttempted: retryCount,
+      retrySucceeded: successCount,
+      retryFailed: failedCount,
+      filesWritten: successCount,
+      failedReasons: failedReasonsNew,
+      retriedFiles: allFiles
+    });
+
+  } catch (error) {
+    console.error('[MYTHIC LEADERBOARD RETRY ERROR]', error);
+    res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
 // /advanced/mythic-leaderboard/:seasonId/:periodId
 router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/mythic-leaderboard/${req.params.seasonId}/${req.params.periodId} - Region: ${req.region || 'unknown'}`);
   try {
-    const { region } = req;
+    // Check if region is specified in query params
+    const specifiedRegion = req.query.region;
+    const regionsToProcess = specifiedRegion ? [specifiedRegion.toLowerCase()] : ['us', 'eu', 'kr', 'tw'];
+    
     const { seasonId, periodId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
     const dungeons = SEASON_DUNGEONS[seasonNum];
     if (!dungeons || dungeons.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
     }
-    const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
-    const connectedRealms = realmsResp.data.connected_realms || [];
-    const connectedRealmIds = connectedRealms.map(obj => {
-      const match = obj.href.match(/connected-realm\/(\d+)/);
-      return match ? match[1] : null;
-    }).filter(Boolean);
-    const limit = pLimit(10);
-    const tasks = [];
+
     let allFiles = [];
+    let totalFiles = 0;
     let fileCount = 0;
-    const totalFiles = dungeons.length * connectedRealmIds.length;
-    for (const dungeonId of dungeons) {
-      for (const connectedRealmId of connectedRealmIds) {
-        tasks.push(limit(async () => {
-          try {
-            const lb = await fetchWithRetry(
-              () => proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId })
-            );
-            if (lb.data && Array.isArray(lb.data.leading_groups)) {
-              const runs = [];
-              for (const group of lb.data.leading_groups) {
-                const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
-                const groupKey = memberIds.join('-');
-                const run_guid = uuidv4();
-                runs.push({
-                  dungeon_id: parseInt(dungeonId, 10),
-                  period_id: parseInt(periodId, 10),
-                  realm_id: parseInt(connectedRealmId, 10),
-                  season_id: seasonNum,
-                  region,
-                  completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
-                  duration_ms: group.duration,
-                  keystone_level: group.keystone_level,
-                  score: group.mythic_rating ? group.mythic_rating.rating : null,
-                  rank: group.ranking,
-                  run_guid,
-                  members: group.members.map(member => {
-                    const specId = member.specialization ? member.specialization.id : null;
-                    return {
-                      character_name: member.profile.name,
-                      class_id: getClassIdFromSpecId(specId),
-                      spec_id: specId,
-                      role: getRoleFromSpecId(specId),
-                      run_guid
-                    };
-                  })
-                });
+    let failedCount = 0;
+    let failedReasons = [];
+
+    // Process each region
+    for (const region of regionsToProcess) {
+      try {
+        // Validate region
+        if (!['us', 'eu', 'kr', 'tw'].includes(region)) {
+          console.error(`[INVALID REGION] ${region} is not supported`);
+          failedCount++;
+          failedReasons.push(`Invalid region: ${region}`);
+          continue;
+        }
+
+        const realmsResp = await proxyService.getGameData('connected-realms-index', region, req.query);
+        const connectedRealms = realmsResp.data.connected_realms || [];
+        const connectedRealmIds = connectedRealms.map(obj => {
+          const match = obj.href.match(/connected-realm\/(\d+)/);
+          return match ? match[1] : null;
+        }).filter(Boolean);
+        const limit = pLimit(10);
+        const tasks = [];
+        const regionTotalFiles = dungeons.length * connectedRealmIds.length;
+        totalFiles += regionTotalFiles;
+        
+        for (const dungeonId of dungeons) {
+          for (const connectedRealmId of connectedRealmIds) {
+            tasks.push(limit(async () => {
+              try {
+                const lb = await fetchWithRetry(
+                  () => proxyService.getGameData('mythic-leaderboard', region, { connectedRealmId, dungeonId, periodId })
+                );
+                if (lb.data && Array.isArray(lb.data.leading_groups)) {
+                  const runs = [];
+                  for (const group of lb.data.leading_groups) {
+                    const memberIds = group.members.map(m => m.profile.id).sort((a, b) => a - b);
+                    const groupKey = memberIds.join('-');
+                    const run_guid = uuidv4();
+                    runs.push({
+                      dungeon_id: parseInt(dungeonId, 10),
+                      period_id: parseInt(periodId, 10),
+                      realm_id: parseInt(connectedRealmId, 10),
+                      season_id: seasonNum,
+                      region,
+                      completed_at: group.completed_timestamp ? new Date(group.completed_timestamp) : null,
+                      duration_ms: group.duration,
+                      keystone_level: group.keystone_level,
+                      score: (group.mythic_rating && group.mythic_rating.rating != null && group.mythic_rating.rating > 0)
+                        ? group.mythic_rating.rating
+                        : (() => {
+                            const upgrades = getKeystoneUpgradesForDungeon(dungeonId);
+                            return calculateFallbackScore(group.keystone_level, upgrades, group.duration);
+                          })(),
+                      rank: group.ranking,
+                      run_guid,
+                      members: group.members.map(member => {
+                        const specId = member.specialization ? member.specialization.id : null;
+                        return {
+                          character_name: member.profile.name,
+                          class_id: getClassIdFromSpecId(specId),
+                          spec_id: specId,
+                          role: getRoleFromSpecId(specId),
+                          run_guid
+                        };
+                      })
+                    });
+                  }
+                  const outputDir = ensureOutputDir();
+                  const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
+                  const filePath = path.join(outputDir, fileName);
+                  fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
+                  allFiles.push(fileName);
+                  fileCount++;
+                  printProgress(fileCount, totalFiles, `File: ${fileName}`);
+                }
+              } catch (e) {
+                console.error(`[API ERROR] region=${region}, dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
+                failedCount++;
+                failedReasons.push(`API Error for ${region}-${dungeonId}-${periodId}-${connectedRealmId}: ${e.message}`);
               }
-              const outputDir = ensureOutputDir();
-              const fileName = `${region}-s${seasonId}-p${periodId}-d${dungeonId}-r${connectedRealmId}.json`;
-              const filePath = path.join(outputDir, fileName);
-              fs.writeFileSync(filePath, JSON.stringify(runs, null, 2));
-              allFiles.push(fileName);
-              fileCount++;
-              printProgress(fileCount, totalFiles, `File: ${fileName}`);
-            }
-          } catch (e) {
-            console.error(`[API ERROR] dungeonId=${dungeonId}, periodId=${periodId}, connectedRealmId=${connectedRealmId}:`, e.message);
+            }));
           }
-        }));
+        }
+        await Promise.allSettled(tasks);
+      } catch (e) {
+        console.error(`[REGION ERROR] Failed to process region ${region}:`, e.message);
+        failedCount++;
+        failedReasons.push(`Region ${region}: ${e.message}`);
       }
     }
-    await Promise.allSettled(tasks);
-    const results = await Promise.allSettled(tasks);
-    const failed = results.filter(r => r.status === 'rejected');
-    const succeeded = results.filter(r => r.status === 'fulfilled');
+
+    const succeeded = totalFiles - failedCount;
     res.json({
-      status: failed.length === 0 ? 'OK' : 'PARTIAL',
+      status: failedCount === 0 ? 'OK' : 'PARTIAL',
       message: 'Data written to JSON files',
-      filesWritten: succeeded.length,
+      filesWritten: succeeded,
       filesExpected: totalFiles,
-      failedCount: failed.length,
-      failedReasons: failed.map(f => f.reason ? f.reason.message : f)
+      failedCount: failedCount,
+      failedReasons: failedReasons,
+      regionsProcessed: regionsToProcess,
+      regionsCount: regionsToProcess.length
     });
   } catch (error) {
     res.status(500).json({ status: 'NOT OK', error: error.message });
@@ -382,6 +737,7 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
 
 // /advanced/seasons
 router.get('/seasons', (req, res) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/seasons`);
   // SEASON_NAMES is an object: { [seasonId]: seasonName }
   const seasons = Object.entries(SEASON_NAMES).map(([season_id, season_name]) => ({
     season_id: Number(season_id),
@@ -392,6 +748,7 @@ router.get('/seasons', (req, res) => {
 
 // /advanced/season-info/:seasonId
 router.get('/season-info/:seasonId', async (req, res, next) => {
+  console.log(`🔧 [ADVANCED] GET /advanced/season-info/${req.params.seasonId} - Region: ${req.region || 'unknown'}`);
   try {
     const { region } = req;
     const { seasonId } = req.params;

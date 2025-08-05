@@ -11,6 +11,7 @@ const errorHandler = require('./middleware/error-handler');
 const rateLimit = require('./middleware/rate-limit');
 const { populateDungeons, populateSeasons, populatePeriods, populateRealms } = require('./routes/admin');
 const metaRoutes = require('./routes/meta');
+const aiRoutes = require('./routes/ai');
 const { pool } = require('./services/db'); // <-- Import the pool
 
 const app = express();
@@ -18,14 +19,25 @@ const PORT = process.env.PORT || 3000;
 
 // Security middleware
 app.use(helmet());
-app.use(cors());
 
-// Body parsing middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// CORS configuration with specific origins
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.FRONTEND_URL, process.env.ALLOWED_ORIGINS?.split(',')].flat().filter(Boolean)
+    : true, // Allow all origins in development
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 
-// Rate limiting
-app.use(rateLimit);
+// Body parsing middleware with increased limits for AI analysis
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Rate limiting (disabled in development)
+if (process.env.NODE_ENV !== 'development') {
+  app.use(rateLimit);
+}
 
 // Health check endpoint
 app.get('/health', async (req, res) => {
@@ -35,26 +47,16 @@ app.get('/health', async (req, res) => {
       status: 'OK', 
       timestamp: new Date().toISOString(),
       service: 'WoW API Proxy',
-      db: {
-        host: process.env.PGHOST,
-        database: process.env.PGDATABASE,
-        user: process.env.PGUSER,
-        ssl: process.env.PGSSLMODE === 'require'
-      },
-      dbConnection: 'connected'
+      dbConnection: 'connected',
+      environment: process.env.NODE_ENV || 'development'
     });
   } catch (err) {
     res.status(500).json({
       status: 'ERROR',
       message: 'Database connection failed',
-      error: err.message,
-      db: {
-        host: process.env.PGHOST,
-        database: process.env.PGDATABASE,
-        user: process.env.PGUSER,
-        ssl: process.env.PGSSLMODE === 'require'
-      },
-      dbConnection: 'failed'
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+      dbConnection: 'failed',
+      environment: process.env.NODE_ENV || 'development'
     });
   }
 });
@@ -65,6 +67,7 @@ app.use('/wow', wowRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 app.use('/meta', metaRoutes);
+app.use('/ai', aiRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -81,29 +84,39 @@ async function startServer() {
   try {
     // Test DB connection before starting
     await pool.query('SELECT 1');
-    console.log('✅ Connected to PostgreSQL DB:', {
-      host: process.env.PGHOST,
-      database: process.env.PGDATABASE,
-      user: process.env.PGUSER,
-      ssl: process.env.PGSSLMODE === 'require'
-    });
+    console.log('✅ Connected to PostgreSQL DB');
+    console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
 
-    console.log('Populating dungeons...');
-    const dungeonsResult = await populateDungeons();
-    console.log('Dungeons:', dungeonsResult);
-    console.log('Populating seasons...');
-    const seasonsResult = await populateSeasons();
-    console.log('Seasons:', seasonsResult);
-    console.log('Populating periods...');
-    const periodsResult = await populatePeriods();
-    console.log('Periods:', periodsResult);
-    console.log('Populating realms...');
-    const realmsResult = await populateRealms();
-    console.log('Realms:', realmsResult);
+    console.log('🔄 Starting parallel population of database tables...');
+    
+    // Run all populate functions in parallel
+    const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+      populateDungeons(),
+      populateSeasons(),
+      populatePeriods(),
+      populateRealms()
+    ]);
+
+    // Log results with status
+    console.log('📊 Population Results:');
+    console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
+    console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
+    console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
+    console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+
+    // Check if any population failed
+    const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult]
+      .filter(result => result.status === 'rejected');
+    
+    if (failedPopulations.length > 0) {
+      console.warn(`⚠️ ${failedPopulations.length} population(s) failed, but continuing with server startup...`);
+    }
+
     app.listen(PORT, () => {
       console.log(`🚀 WoW API Proxy server running on port ${PORT}`);
       console.log(`❤️ Healthcheck: http://localhost:${PORT}/health`);
       console.log(`📚 Connected to DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
+      console.log(``);
       console.log(`** SERVICE IS READY **`);
     });
   } catch (err) {
