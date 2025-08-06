@@ -333,6 +333,16 @@ const SEASON_DUNGEONS = {
     504,
     506,
     525
+  ],
+  "15": [
+    378,
+    391,
+    392,
+    499,
+    503,
+    505,
+    525,
+    542
   ]
 };
 
@@ -350,7 +360,8 @@ const SEASON_NAMES = {
   11: "DF S3",
   12: "DF S4",
   13: "TWW S1",
-  14: "TWW S2"
+  14: "TWW S2",
+  15: "TWW S3",
 };
 
 // WoW Class IDs and Names (example, fill in all as needed)
@@ -501,7 +512,9 @@ const WOW_DUNGEONS = [
   {id: 505, keystone_upgrades: [{qualifying_duration: 1860000, upgrade_level: 1}, {qualifying_duration: 1488000, upgrade_level: 2}, {qualifying_duration: 1116000, upgrade_level: 3}], name: "The Dawnbreaker", shortname: "DAWN"},
   {id: 506, keystone_upgrades: [{qualifying_duration: 1980000, upgrade_level: 1}, {qualifying_duration: 1584000, upgrade_level: 2}, {qualifying_duration: 1188000, upgrade_level: 3}], name: "Cinderbrew Meadery", shortname: "CM"},
   {id: 507, keystone_upgrades: [{qualifying_duration: 2040000, upgrade_level: 1}, {qualifying_duration: 1632000, upgrade_level: 2}, {qualifying_duration: 1224000, upgrade_level: 3}], name: "Grim Batol", shortname: "GB"},
-  {id: 525, keystone_upgrades: [{qualifying_duration: 1980000, upgrade_level: 1}, {qualifying_duration: 1584000, upgrade_level: 2}, {qualifying_duration: 1188000, upgrade_level: 3}], name: "Operation: Floodgate", shortname: "FLOOD"}
+  {id: 525, keystone_upgrades: [{qualifying_duration: 1980000, upgrade_level: 1}, {qualifying_duration: 1584000, upgrade_level: 2}, {qualifying_duration: 1188000, upgrade_level: 3}], name: "Operation: Floodgate", shortname: "FLOOD"},
+  {id: 541, keystone_upgrades: [{qualifying_duration: 1800000, upgrade_level: 1}, {qualifying_duration: 1440000, upgrade_level: 2}, {qualifying_duration: 1080000, upgrade_level: 3}], name: "The Stonecore", shortname: "SC"},
+  {id: 542, keystone_upgrades: [{qualifying_duration: 1860000, upgrade_level: 1}, {qualifying_duration: 1488000, upgrade_level: 2}, {qualifying_duration: 1116000, upgrade_level: 3}], name: "Eco-Dome Al'dani", shortname: "ECO"}
 ];
 
 // WoW Race IDs and Names (auto-generated from races.json)
@@ -607,7 +620,8 @@ const SEASON_METADATA = {
   11: { expansion: 'Dragonflight', patch: '10.2', name: 'DF S3' },
   12: { expansion: 'Dragonflight', patch: '10.2.6', name: 'DF S4' },
   13: { expansion: 'The War Within', patch: '11.0', name: 'TWW S1' },
-  14: { expansion: 'The War Within', patch: '11.1', name: 'TWW S2' }
+  14: { expansion: 'The War Within', patch: '11.1', name: 'TWW S2' },
+  15: { expansion: 'The War Within', patch: '11.2', name: 'TWW S3' }
 };
 
 const EXPANSION_METADATA = {
