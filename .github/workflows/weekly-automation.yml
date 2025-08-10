@@ -1,0 +1,31 @@
+name: Weekly What The Meta Automation
+
+on:
+  schedule:
+    # Run weekly at 4:00 AM UTC (adjust timezone as needed)
+    - cron: '0 4 * * 4'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  trigger-automation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: render-weekly-automation
+      cancel-in-progress: true
+    steps:
+      - name: Trigger Weekly Job
+        run: |
+          echo "🚀 Triggering weekly automation..."
+          curl --fail-with-body -X POST "https://api.render.com/v1/services/$SERVICE_ID/jobs" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"startCommand": "npm run weekly-job"}' \
+            -w "\nHTTP Status: %{http_code}\n"
+          
+          echo "✅ Automation triggered successfully!"
+        
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ vars.SERVICE_ID }}
