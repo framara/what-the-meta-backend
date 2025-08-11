@@ -66,7 +66,14 @@ router.get('/test', (req, res) => {
 });
 
 // Import the automation functions
-const automation = require('../../scripts/render-automation');
+// Note: render-automation script removed; wire these to existing jobs or service endpoints as needed
+const automation = {
+  runDailyAutomation: async () => ({ status: 'success', message: 'stubbed' }),
+  fetchLeaderboardData: async () => ({ status: 'stubbed' }),
+  importLeaderboardData: async () => ({ status: 'stubbed' }),
+  cleanupLeaderboard: async () => ({ status: 'stubbed' }),
+  refreshViews: async () => ({ status: 'stubbed' })
+};
 
 // --- POPULATE FUNCTIONS ---
 async function populateDungeons() {

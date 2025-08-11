@@ -114,7 +114,7 @@ wow-api/
 │   ├── config/          # Constants and configuration
 │   └── services/        # Business logic
 ├── utils/               # Database scripts and documentation
-├── output/              # Generated JSON files
+├── output/              # Generated JSON files (gitignored)
 └── scripts/             # Automation and maintenance scripts
 ```
 

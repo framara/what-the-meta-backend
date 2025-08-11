@@ -24,17 +24,20 @@ services:
           cpus: '2'
           memory: '4G'
     shm_size: '2gb'  # Increased for better parallel query performance
-    command: postgres
-        -c config_file=/etc/postgresql/postgresql.conf
-        -c shared_buffers=2GB
-        -c work_mem=128MB
-        -c maintenance_work_mem=768MB
-        -c effective_cache_size=6GB
-        -c random_page_cost=1.1
-        -c effective_io_concurrency=200
-        -c max_parallel_workers=4
-        -c max_parallel_workers_per_gather=2
-        -c max_worker_processes=4
+    command:
+      [
+        "postgres",
+        "-c", "config_file=/etc/postgresql/postgresql.conf",
+        "-c", "shared_buffers=2GB",
+        "-c", "work_mem=128MB",
+        "-c", "maintenance_work_mem=768MB",
+        "-c", "effective_cache_size=6GB",
+        "-c", "random_page_cost=1.1",
+        "-c", "effective_io_concurrency=200",
+        "-c", "max_parallel_workers=4",
+        "-c", "max_parallel_workers_per_gather=2",
+        "-c", "max_worker_processes=4"
+      ]
     environment:
       POSTGRES_PASSWORD: yourpassword
       POSTGRES_USER: wowuser
