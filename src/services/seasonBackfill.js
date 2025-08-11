@@ -13,6 +13,20 @@ async function backfillSeasonDungeonMappings(portOrBaseUrl) {
     const seasonIds = seasonsRes.rows.map(r => r.id);
 
     for (const sid of seasonIds) {
+      // Ensure season name is set from constants (fallback to "Season X") if missing
+      try {
+        const current = await pool.query('SELECT name FROM season WHERE id = $1', [sid]);
+        const existingName = current.rows?.[0]?.name || '';
+        if (!existingName || existingName.trim() === '') {
+          const constants = require('../config/constants');
+          const meta = constants.SEASON_METADATA && constants.SEASON_METADATA[sid];
+          const desiredName = (meta && meta.name) ? meta.name : `Season ${sid}`;
+          await pool.query('UPDATE season SET name = $2 WHERE id = $1', [sid, desiredName]);
+          console.log(`[BACKFILL] Set season ${sid} name to '${desiredName}'`);
+        }
+      } catch (nameErr) {
+        console.warn(`[BACKFILL] Season ${sid} name check/update failed:`, nameErr.message);
+      }
       // Skip if already present
       const hasRows = await pool.query('SELECT 1 FROM season_dungeon WHERE season_id = $1 LIMIT 1', [sid]);
       if (hasRows.rowCount > 0) continue;
