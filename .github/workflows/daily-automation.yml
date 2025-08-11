@@ -2,8 +2,10 @@ name: Daily What The Meta Automation
 
 on:
   schedule:
-    # Run daily at 1:00 AM UTC (adjust timezone as needed)
+    # Run 3 times a day at 01:00, 09:00, and 17:00 UTC
     - cron: '0 1 * * *'
+    - cron: '0 9 * * *'
+    - cron: '0 17 * * *'
   workflow_dispatch: # Allow manual trigger
 
 jobs:
