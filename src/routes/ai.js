@@ -150,7 +150,7 @@ router.post('/predictions', async (req, res) => {
     const specTemporalData = {};
     
     // Limit processing to avoid memory issues with very large datasets
-    const maxPeriodsToProcess = Math.min(seasonData.total_periods, 25); // Limit to 25 periods max
+  const maxPeriodsToProcess = Math.min(seasonData.total_periods, 18); // Limit to 18 periods max (token-friendly)
     const periodsToProcess = seasonData.periods.slice(-maxPeriodsToProcess); // Use the last 25 periods
     
     // Processing periods for AI analysis
@@ -241,12 +241,44 @@ router.post('/predictions', async (req, res) => {
       });
     }
 
+    // Create a slimmer view for the AI prompt to reduce tokens (omit avgLevel which isn't required in the response)
+    const specTemporalDataForAI = {};
+    Object.entries(specTemporalData).forEach(([specId, entry]) => {
+      specTemporalDataForAI[specId] = {
+        appearances: entry.appearances,
+        successRates: entry.successRates,
+        totalRuns: entry.totalRuns,
+        recentTrend: entry.recentTrend,
+        trendSlope: entry.trendSlope,
+        consistency: entry.consistency,
+        crossValidationScore: entry.crossValidationScore
+      };
+    });
+
+    // Keep only the top N specs by totalRuns to reduce token usage
+    const TOP_SPECS_FOR_PROMPT = 26;
+    const sortedSpecIds = Object.keys(specTemporalDataForAI)
+      .sort((a, b) => (specTemporalDataForAI[b].totalRuns || 0) - (specTemporalDataForAI[a].totalRuns || 0))
+      .slice(0, TOP_SPECS_FOR_PROMPT);
+    const specTemporalDataForAITrim = {};
+    sortedSpecIds.forEach(id => { specTemporalDataForAITrim[id] = specTemporalDataForAI[id]; });
+
     // Prepare data for OpenAI
-  const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini"; // Default to gpt-4o-mini for cost efficiency
-    
-  const openAIPromptBase = {
-      model: openAIModel,
-      messages: [
+    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini"; // Default to gpt-4o-mini for cost efficiency
+
+    // Decide token parameter key based on model family
+    const isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
+    const maxTokensPredictions = 10000; // 10k
+
+    // Helper to build prompt payloads with correct token param
+    const buildPrompts = (useCompletionTokensParam, opts = {}) => {
+      const { includeTemperature = !isGpt5Family, includeSeed = true } = opts;
+      const tokenParam = useCompletionTokensParam
+        ? { max_completion_tokens: maxTokensPredictions }
+        : { max_tokens: maxTokensPredictions };
+      const base = {
+        model: openAIModel,
+        messages: [
         {
           role: "system",
           content: `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to analyze spec performance data and predict meta trends.
@@ -282,6 +314,7 @@ ANALYSIS REQUIREMENTS:
 8. Identify any specs that are falling out of the meta
 9. Consider role balance (tank, healer, dps) in your analysis
 10. Note any role-specific trends (e.g., tank meta shifts, healer viability changes)
+11. Keep reasoning succinct (<= 30 words each) and limit the predictions array to a maximum of 24 items, focusing on the most impactful specs.
 
 RESPONSE FORMAT:
 Return a JSON object with this exact structure:
@@ -325,10 +358,10 @@ SEASON DATA:
 - Total Keys: ${seasonData.total_keys}
 
 SPEC TEMPORAL DATA:
-${JSON.stringify(specTemporalData, null, 2)}
+${JSON.stringify(specTemporalDataForAITrim)}
 
-SPEC EVOLUTION DATA:
-${JSON.stringify(specEvolution, null, 2)}
+SPEC EVOLUTION DATA (last ${maxPeriodsToProcess} periods):
+${JSON.stringify({ evolution: slicedEvolution })}
 
 SPEC NAMES REFERENCE:
 Use these exact spec names in your predictions:
@@ -344,20 +377,27 @@ IMPORTANT:
 5. Respond ONLY with valid JSON in the exact format specified. Do not include any additional text, explanations, or markdown formatting. Start your response with { and end with }.`
         }
       ],
-      temperature: 0.2,
-      max_tokens: 3000,
-      seed: 42
+        ...(includeTemperature ? { temperature: 0.2 } : {}),
+        ...(includeSeed ? { seed: 42 } : {}),
+        ...tokenParam
+      };
+      return { base, withJson: { ...base, response_format: { type: "json_object" } } };
     };
-    // Prefer JSON responses when the model supports it
-    const openAIPrompt = { ...openAIPromptBase, response_format: { type: "json_object" } };
+
+    let includeTemperature = !isGpt5Family;
+    let includeSeed = true;
+    let { base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(isGpt5Family, { includeTemperature, includeSeed });
 
     // Call OpenAI API with retry logic for rate limits
     console.log(`🤖 [AI] Calling OpenAI API for season ${seasonId}...`);
     
-    let openAIResponse;
-    let retryCount = 0;
-    const maxRetries = 3;
-    let triedWithoutJsonFormat = false;
+  let openAIResponse;
+  let retryCount = 0;
+  const maxRetries = 3;
+  let triedWithoutJsonFormat = false;
+  let swappedTokenParamOnce = false;
+  let removedTemperature = false;
+  let removedSeed = false;
     
     while (retryCount <= maxRetries) {
       try {
@@ -376,6 +416,32 @@ IMPORTANT:
           triedWithoutJsonFormat = true;
           continue;
         }
+        // If the token parameter is not supported, flip between max_tokens and max_completion_tokens once
+        const errMsg = (error.response?.data?.error?.message || '').toLowerCase();
+        if (error.response?.status === 400 && !swappedTokenParamOnce && (errMsg.includes('unsupported parameter') || errMsg.includes('max_tokens') || errMsg.includes('max_completion_tokens'))) {
+          swappedTokenParamOnce = true;
+          const currentlyUsingCompletion = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+          console.log(`🤖 [AI] Detected token param mismatch for model '${openAIModel}'. Switching token field and retrying...`);
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(!currentlyUsingCompletion, { includeTemperature, includeSeed }));
+          // keep triedWithoutJsonFormat as-is, just rebuild prompts
+          continue;
+        }
+        // If temperature not supported, drop it and retry once
+        if (error.response?.status === 400 && !removedTemperature && errMsg.includes('temperature')) {
+          console.log(`🤖 [AI] Temperature not supported for model '${openAIModel}', removing temperature and retrying...`);
+          removedTemperature = true;
+          includeTemperature = false;
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature, includeSeed }));
+          continue;
+        }
+        // If seed not supported, drop it and retry once
+        if (error.response?.status === 400 && !removedSeed && errMsg.includes('seed')) {
+          console.log(`🤖 [AI] Seed not supported for model '${openAIModel}', removing seed and retrying...`);
+          removedSeed = true;
+          includeSeed = false;
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature, includeSeed }));
+          continue;
+        }
         if (error.response?.status === 429 && retryCount < maxRetries) {
           retryCount++;
           // Respect Retry-After if present; otherwise exponential backoff with jitter
@@ -390,46 +456,86 @@ IMPORTANT:
       }
     }
 
-    const aiResponse = openAIResponse.data.choices[0].message.content;
-    
-  let parsedResponse;
+    const aiMessage = openAIResponse.data.choices?.[0];
+    const aiResponse = aiMessage?.message?.content || '';
+    const finishReason = aiMessage?.finish_reason;
+    const usage = openAIResponse.data.usage || {};
+    if (finishReason) {
+      console.log(`🤖 [AI] finish_reason=${finishReason} prompt_tokens=${usage.prompt_tokens || 'n/a'} completion_tokens=${usage.completion_tokens || 'n/a'}`);
+    }
 
-    try {
-      parsedResponse = JSON.parse(aiResponse);
-    } catch (parseError) {
-      console.error('Failed to parse AI response:', parseError);
-      console.error('Raw AI response:', aiResponse);
-      
-      // Try to extract JSON from the response if it contains extra text
-      // First try to find JSON in markdown code blocks
-      const codeBlockMatch = aiResponse.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-      if (codeBlockMatch) {
-        try {
-          parsedResponse = JSON.parse(codeBlockMatch[1]);
-        } catch (extractError) {
-          console.error('Failed to extract JSON from code block:', extractError);
+    let parsedResponse;
+    let parseErrorMemo;
+
+    function tryStandardParses(raw) {
+      try {
+        return JSON.parse(raw);
+      } catch (e1) {
+        // Try code block
+        const codeBlockMatch = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+        if (codeBlockMatch) {
+          try { return JSON.parse(codeBlockMatch[1]); } catch (e2) { /* fallthrough */ }
         }
-      }
-      
-      // If no code block found, try to find any JSON object
-      if (!parsedResponse) {
-        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+        // Try any JSON object substring
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          try {
-            parsedResponse = JSON.parse(jsonMatch[0]);
-          } catch (extractError) {
-            console.error('Failed to extract JSON:', extractError);
+          try { return JSON.parse(jsonMatch[0]); } catch (e3) { /* fallthrough */ }
+        }
+        // Try simple brace-balance repair if it looks truncated
+        const first = raw.indexOf('{');
+        const last = raw.lastIndexOf('}');
+        if (first !== -1 && last !== -1 && last >= first) {
+          let candidate = raw.slice(first, last + 1);
+          const opens = (candidate.match(/\{/g) || []).length;
+          const closes = (candidate.match(/\}/g) || []).length;
+          if (opens > closes) {
+            candidate = candidate + '}'.repeat(opens - closes);
+            try { return JSON.parse(candidate); } catch (e4) { /* fallthrough */ }
           }
         }
+        parseErrorMemo = e1;
+        return undefined;
       }
-      
-      if (!parsedResponse) {
-        return res.status(500).json({ 
-          error: 'Failed to parse AI response',
-          details: parseError.message,
-          rawResponse: aiResponse.substring(0, 1000)
+    }
+
+    parsedResponse = tryStandardParses(aiResponse);
+
+    // If still not parsable or model cut off output, attempt one reformat retry
+    if (!parsedResponse || finishReason === 'length') {
+      console.warn('⚠️ [AI] Initial AI response invalid or truncated; attempting reformat retry');
+      const useCompletionTokensParam = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+      const tokenParam = useCompletionTokensParam ? { max_completion_tokens: Math.min(maxTokensPredictions * 2, 20000) } : { max_tokens: Math.min(maxTokensPredictions * 2, 20000) };
+      const reformatBase = {
+        model: openAIModel,
+        messages: [
+          { role: 'system', content: 'You will be given your previous output which is intended to be JSON. Convert it into strictly valid JSON that matches the requested schema. Do not add commentary. Respond with JSON only.' },
+          { role: 'user', content: aiResponse || 'null' }
+        ],
+        ...tokenParam
+      };
+      const reformatWithJson = { ...reformatBase, response_format: { type: 'json_object' } };
+      try {
+        const reformatResp = await axios.post('https://api.openai.com/v1/chat/completions', reformatWithJson, {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
         });
+        const reformatted = reformatResp.data.choices?.[0]?.message?.content || '';
+        parsedResponse = tryStandardParses(reformatted);
+      } catch (rfErr) {
+        console.warn('⚠️ [AI] Reformat retry failed, will return parse error');
       }
+    }
+
+    if (!parsedResponse) {
+      return res.status(500).json({
+        error: 'Failed to parse AI response',
+        details: (parseErrorMemo && parseErrorMemo.message) || 'Invalid or truncated response',
+        finishReason: finishReason || 'unknown',
+        rawResponse: (aiResponse || '').substring(0, 2000)
+      });
     }
 
     // Validate and process the AI response
@@ -608,7 +714,7 @@ router.post('/meta-health', async (req, res) => {
     console.log(`📊 [AI] Processing data for meta health analysis...`);
     
     // Limit processing to avoid memory and token issues
-    const maxPeriodsToProcess = Math.min(compositionData.total_periods, 25);
+  const maxPeriodsToProcess = Math.min(compositionData.total_periods, 18);
     const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess);
     
     // Process composition data for meta health analysis
@@ -851,6 +957,12 @@ router.post('/meta-health', async (req, res) => {
       ...metaHealthData.compositionAnalysis,
       ...compositionAnalysis
     };
+    // Create a brief composition summary for the AI prompt to reduce tokens
+    const compositionBrief = {
+      mostPopularGroup: metaHealthData.compositionAnalysis.mostPopularGroup,
+      specReplacements: metaHealthData.compositionAnalysis.specReplacements,
+      compositionDiversity: metaHealthData.compositionAnalysis.compositionDiversity
+    };
 
     // Pre-calculate spec usage totals and percentages for each role
     const specUsageData = {
@@ -888,7 +1000,7 @@ router.post('/meta-health', async (req, res) => {
     // Prepare data for OpenAI analysis
   const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
-    const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to provide simple, clear insights about the current meta state.
+  const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to provide simple, clear insights about the current meta state.
 
 ANALYSIS REQUIREMENTS:
 1. Identify the most dominant specs in each role (tank, healer, dps)
@@ -913,6 +1025,7 @@ ANALYSIS REQUIREMENTS:
    - For DPS: if the accumulated usage of the top 3 specs is more than 46% of the total runs, then the DPS meta is bad
 5. Provide 2-3 simple, actionable insights about the meta
 6. Use the pre-calculated total run counts from the SPEC USAGE DATA
+7. Keep output concise: dominantSpecs and underusedSpecs lists should include at most 3 items per role. Keep each description under 25 words.
 
 SPEC ROLES MAPPING:
 - Tank specs: 73, 66, 250, 104, 581, 268
@@ -995,14 +1108,8 @@ IMPORTANT: Ensure balance issue descriptions are unique and non-redundant. Each 
 SEASON SUMMARY:
 ${JSON.stringify(metaHealthData.season, null, 2)}
 
-ROLE ANALYSIS DATA:
-${JSON.stringify(metaHealthData.roleAnalysis, null, 2)}
-
-COMPOSITION ANALYSIS:
-${JSON.stringify(metaHealthData.compositionAnalysis, null, 2)}
-
-TEMPORAL ANALYSIS:
-${JSON.stringify(metaHealthData.temporalAnalysis, null, 2)}
+COMPOSITION SUMMARY (top group and replacements only):
+${JSON.stringify(compositionBrief, null, 2)}
 
 PRE-CALCULATED SPEC USAGE DATA:
 ${JSON.stringify(specUsageData, null, 2)}
@@ -1014,25 +1121,42 @@ IMPORTANT:
 4. Do not include any additional text or markdown formatting
 5. Use the pre-calculated usage percentages from the SPEC USAGE DATA above - do NOT calculate percentages yourself`;
 
-    const openAIPromptBase = {
-      model: openAIModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      temperature: 0.2,
-      max_tokens: 4000,
-      seed: 42
+    // Decide token parameter key based on model family
+    const isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
+    const maxTokensMetaHealth = 10000; // 10k
+
+    // Helper to build prompt payloads with correct token param
+    const buildPrompts = (useCompletionTokensParam, opts = {}) => {
+      const { includeTemperature = !isGpt5Family, includeSeed = true } = opts;
+      const tokenParam = useCompletionTokensParam
+        ? { max_completion_tokens: maxTokensMetaHealth }
+        : { max_tokens: maxTokensMetaHealth };
+      const base = {
+        model: openAIModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        ...(includeTemperature ? { temperature: 0.2 } : {}),
+        ...(includeSeed ? { seed: 42 } : {}),
+        ...tokenParam
+      };
+      return { base, withJson: { ...base, response_format: { type: "json_object" } } };
     };
-    const openAIPrompt = { ...openAIPromptBase, response_format: { type: "json_object" } };
+    let includeTemperatureMH = !isGpt5Family;
+    let includeSeedMH = true;
+    let { base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(isGpt5Family, { includeTemperature: includeTemperatureMH, includeSeed: includeSeedMH });
 
     // Call OpenAI API with retry logic for rate limits
     console.log(`🤖 [AI] Calling OpenAI API for meta health analysis...`);
     
   let openAIResponse;
-    let retryCount = 0;
-    const maxRetries = 3;
+  let retryCount = 0;
+  const maxRetries = 3;
   let triedWithoutJsonFormat = false;
+  let swappedTokenParamOnce = false;
+  let removedTemperatureMH = false;
+  let removedSeedMH = false;
     
     while (retryCount <= maxRetries) {
       try {
@@ -1050,6 +1174,31 @@ IMPORTANT:
           triedWithoutJsonFormat = true;
           continue;
         }
+        // Handle token param mismatch by flipping param once
+        const errMsg = (error.response?.data?.error?.message || '').toLowerCase();
+        if (error.response?.status === 400 && !swappedTokenParamOnce && (errMsg.includes('unsupported parameter') || errMsg.includes('max_tokens') || errMsg.includes('max_completion_tokens'))) {
+          swappedTokenParamOnce = true;
+          const currentlyUsingCompletion = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+          console.log(`🤖 [AI] Detected token param mismatch for model '${openAIModel}'. Switching token field and retrying...`);
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(!currentlyUsingCompletion, { includeTemperature: includeTemperatureMH, includeSeed: includeSeedMH }));
+          continue;
+        }
+        // If temperature not supported, drop it and retry once
+        if (error.response?.status === 400 && !removedTemperatureMH && errMsg.includes('temperature')) {
+          console.log(`🤖 [AI] Temperature not supported for model '${openAIModel}', removing temperature and retrying...`);
+          removedTemperatureMH = true;
+          includeTemperatureMH = false;
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature: includeTemperatureMH, includeSeed: includeSeedMH }));
+          continue;
+        }
+        // If seed not supported, drop it and retry once
+        if (error.response?.status === 400 && !removedSeedMH && errMsg.includes('seed')) {
+          console.log(`🤖 [AI] Seed not supported for model '${openAIModel}', removing seed and retrying...`);
+          removedSeedMH = true;
+          includeSeedMH = false;
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature: includeTemperatureMH, includeSeed: includeSeedMH }));
+          continue;
+        }
         if (error.response?.status === 429 && retryCount < maxRetries) {
           retryCount++;
           const retryAfterHeader = error.response?.headers?.['retry-after'];
@@ -1063,43 +1212,83 @@ IMPORTANT:
       }
     }
 
-    const aiResponse = openAIResponse.data.choices[0].message.content;
-    
+    const aiMessage = openAIResponse.data.choices?.[0];
+    const aiResponse = aiMessage?.message?.content || '';
+    const finishReason = aiMessage?.finish_reason;
+    const usage = openAIResponse.data.usage || {};
+    if (finishReason) {
+      console.log(`🤖 [AI] finish_reason=${finishReason} prompt_tokens=${usage.prompt_tokens || 'n/a'} completion_tokens=${usage.completion_tokens || 'n/a'}`);
+    }
+
     let parsedResponse;
-    try {
-      parsedResponse = JSON.parse(aiResponse);
-    } catch (parseError) {
-      console.error('Failed to parse AI response:', parseError);
-      console.error('Raw AI response:', aiResponse);
-      
-      // Try to extract JSON from the response if it contains extra text
-      const codeBlockMatch = aiResponse.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-      if (codeBlockMatch) {
-        try {
-          parsedResponse = JSON.parse(codeBlockMatch[1]);
-        } catch (extractError) {
-          console.error('Failed to extract JSON from code block:', extractError);
+    let parseErrorMemo;
+
+    function tryStandardParses(raw) {
+      try {
+        return JSON.parse(raw);
+      } catch (e1) {
+        const codeBlockMatch = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+        if (codeBlockMatch) {
+          try { return JSON.parse(codeBlockMatch[1]); } catch (e2) { /* fallthrough */ }
         }
-      }
-      
-      if (!parsedResponse) {
-        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          try {
-            parsedResponse = JSON.parse(jsonMatch[0]);
-          } catch (extractError) {
-            console.error('Failed to extract JSON:', extractError);
+          try { return JSON.parse(jsonMatch[0]); } catch (e3) { /* fallthrough */ }
+        }
+        // simple brace repair
+        const first = raw.indexOf('{');
+        const last = raw.lastIndexOf('}');
+        if (first !== -1 && last !== -1 && last >= first) {
+          let candidate = raw.slice(first, last + 1);
+          const opens = (candidate.match(/\{/g) || []).length;
+          const closes = (candidate.match(/\}/g) || []).length;
+          if (opens > closes) {
+            candidate = candidate + '}'.repeat(opens - closes);
+            try { return JSON.parse(candidate); } catch (e4) { /* noop */ }
           }
         }
+        parseErrorMemo = e1;
+        return undefined;
       }
-      
-      if (!parsedResponse) {
-        return res.status(500).json({ 
-          error: 'Failed to parse AI response',
-          details: parseError.message,
-          rawResponse: aiResponse.substring(0, 1000)
+    }
+
+    parsedResponse = tryStandardParses(aiResponse);
+
+    if (!parsedResponse || finishReason === 'length') {
+      console.warn('⚠️ [AI] Initial AI response invalid or truncated; attempting reformat retry (meta-health)');
+      const useCompletionTokensParam = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+      const tokenParam = useCompletionTokensParam ? { max_completion_tokens: Math.min(maxTokensMetaHealth * 2, 8000) } : { max_tokens: Math.min(maxTokensMetaHealth * 2, 8000) };
+      const reformatBase = {
+        model: openAIModel,
+        messages: [
+          { role: 'system', content: 'You will be given your previous output which is intended to be JSON. Convert it into strictly valid JSON that matches the requested schema. Do not add commentary. Respond with JSON only.' },
+          { role: 'user', content: aiResponse || 'null' }
+        ],
+        ...tokenParam
+      };
+      const reformatWithJson = { ...reformatBase, response_format: { type: 'json_object' } };
+      try {
+        const reformatResp = await axios.post('https://api.openai.com/v1/chat/completions', reformatWithJson, {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
         });
+        const reformatted = reformatResp.data.choices?.[0]?.message?.content || '';
+        parsedResponse = tryStandardParses(reformatted);
+      } catch (rfErr) {
+        console.warn('⚠️ [AI] Reformat retry failed for meta-health');
       }
+    }
+
+    if (!parsedResponse) {
+      return res.status(500).json({
+        error: 'Failed to parse AI response',
+        details: (parseErrorMemo && parseErrorMemo.message) || 'Invalid or truncated response',
+        finishReason: finishReason || 'unknown',
+        rawResponse: (aiResponse || '').substring(0, 2000)
+      });
     }
 
     // Validate the AI response structure
@@ -1179,7 +1368,8 @@ IMPORTANT:
 // GET /ai/analysis/:season_id
 // Get cached AI analysis for a season
 router.get('/analysis/:season_id', async (req, res) => {
-  console.log(`🤖 [AI] GET /ai/analysis/${req.params.season_id}`);
+  const analysisType = req.query.type || 'predictions';
+  console.log(`🤖 [AI] GET /ai/analysis/${req.params.season_id} (type=${analysisType})`);
   try {
     const season_id = Number(req.params.season_id);
     
@@ -1188,7 +1378,7 @@ router.get('/analysis/:season_id', async (req, res) => {
     }
 
     // Get analysis type from query parameter, default to 'predictions'
-    const analysisType = req.query.type || 'predictions';
+    // const analysisType = req.query.type || 'predictions';
     
     // Check if we have cached analysis
     const cachedResult = await db.pool.query(
@@ -1234,9 +1424,9 @@ router.get('/analysis/:season_id', async (req, res) => {
         }
     }
 
-    // If no cache or expired, trigger new analysis
-    // This would typically be done asynchronously, but for now we'll do it synchronously
-    res.status(404).json({ error: 'No cached analysis available. Please use POST /ai/predictions to generate new analysis.' });
+  // If no cache or expired, do not auto-trigger generation; instruct the client explicitly per type
+  const generateHint = analysisType === 'meta_health' ? 'POST /ai/meta-health' : 'POST /ai/predictions';
+  res.status(404).json({ error: `No cached analysis available for type '${analysisType}'. Please use ${generateHint} to generate new analysis.` });
 
   } catch (error) {
     console.error('[AI ANALYSIS ERROR]', error);
