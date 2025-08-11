@@ -610,6 +610,20 @@ IMPORTANT:
       );
       
       // Then insert the new analysis
+      // Sanitize DB-bound fields to respect column constraints
+      const rawConfidence = parsedResponse?.analysis?.confidence;
+      const safeConfidence = Number.isFinite(Number(rawConfidence))
+        ? Math.max(0, Math.min(100, Math.round(Number(rawConfidence) * 100) / 100))
+        : 75;
+      const rawQuality = parsedResponse?.analysis?.dataQuality;
+      let safeQuality = 'good';
+      if (typeof rawQuality === 'string') {
+        safeQuality = rawQuality.trim();
+      } else if (rawQuality != null) {
+        safeQuality = String(rawQuality);
+      }
+      if (safeQuality.length > 20) safeQuality = safeQuality.slice(0, 20);
+
       await db.pool.query(
         `INSERT INTO ai_analysis (season_id, analysis_data, analysis_type, confidence_score, data_quality)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -617,8 +631,8 @@ IMPORTANT:
           seasonId,
           JSON.stringify(analysisResult),
           'predictions',
-          parsedResponse.analysis?.confidence || 75,
-          parsedResponse.analysis?.dataQuality || 'Good'
+          safeConfidence,
+          safeQuality
         ]
       );
       console.log(`✅ [AI] Analysis cached for season ${seasonId}`);
