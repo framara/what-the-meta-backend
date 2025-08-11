@@ -6,6 +6,64 @@ const { getSpecEvolutionForSeason, getCompositionDataForSeason } = require('../s
 
 const router = express.Router();
 
+// Lightweight validators (no external deps)
+function isNumberArray(a) { return Array.isArray(a) && a.every(n => typeof n === 'number' && Number.isFinite(n)); }
+function isStringArray(a) { return Array.isArray(a) && a.every(s => typeof s === 'string'); }
+
+function validatePredictionsResponse(resp) {
+  const errors = [];
+  if (!resp || typeof resp !== 'object') errors.push('response not an object');
+  if (!Array.isArray(resp.predictions)) errors.push('predictions missing or not an array');
+  if (!resp.analysis || typeof resp.analysis !== 'object') errors.push('analysis missing or not an object');
+  if (Array.isArray(resp.predictions)) {
+    // Sample-check first up to 15 items
+    const sample = resp.predictions.slice(0, 15);
+    for (let i = 0; i < sample.length; i++) {
+      const p = sample[i];
+      if (typeof p.specId !== 'number') errors.push(`predictions[${i}].specId must be number`);
+      if (typeof p.specName !== 'string') errors.push(`predictions[${i}].specName must be string`);
+      if (typeof p.className !== 'string') errors.push(`predictions[${i}].className must be string`);
+      ['currentUsage','predictedChange','confidence','successRate'].forEach(k => {
+        if (typeof p[k] !== 'number') errors.push(`predictions[${i}].${k} must be number`);
+      });
+      const td = p.temporalData || {};
+      if (!isNumberArray(td.appearances || [])) errors.push(`predictions[${i}].temporalData.appearances must be number[]`);
+      if (!isNumberArray(td.successRates || [])) errors.push(`predictions[${i}].temporalData.successRates must be number[]`);
+      ['totalRuns','recentTrend','trendSlope','consistency','crossValidationScore'].forEach(k => {
+        if (typeof td[k] !== 'number') errors.push(`predictions[${i}].temporalData.${k} must be number`);
+      });
+      if (errors.length > 20) break; // avoid noise
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function validateMetaHealthResponse(resp) {
+  const errors = [];
+  if (!resp || typeof resp !== 'object') errors.push('response not an object');
+  const ms = resp.metaSummary;
+  if (!ms || typeof ms !== 'object') errors.push('metaSummary missing');
+  else {
+    if (typeof ms.overallState !== 'string') errors.push('metaSummary.overallState must be string');
+    if (typeof ms.summary !== 'string') errors.push('metaSummary.summary must be string');
+    if (!isStringArray(ms.keyInsights || [])) errors.push('metaSummary.keyInsights must be string[]');
+  }
+  const ra = resp.roleAnalysis;
+  if (!ra || typeof ra !== 'object') errors.push('roleAnalysis missing');
+  else {
+    ['tank','healer','dps'].forEach(role => {
+      const r = ra[role];
+      if (!r || typeof r !== 'object') { errors.push(`roleAnalysis.${role} missing`); return; }
+      if (!Array.isArray(r.dominantSpecs)) errors.push(`roleAnalysis.${role}.dominantSpecs must be array`);
+      if (!Array.isArray(r.underusedSpecs)) errors.push(`roleAnalysis.${role}.underusedSpecs must be array`);
+      if (typeof r.healthStatus !== 'string') errors.push(`roleAnalysis.${role}.healthStatus must be string`);
+      if (typeof r.totalRuns !== 'number') errors.push(`roleAnalysis.${role}.totalRuns must be number`);
+    });
+  }
+  if (!Array.isArray(resp.balanceIssues)) errors.push('balanceIssues must be array');
+  return { ok: errors.length === 0, errors };
+}
+
 // POST /ai/predictions
 // Send data to OpenAI for AI-powered meta predictions
 router.post('/predictions', async (req, res) => {
@@ -136,9 +194,31 @@ router.post('/predictions', async (req, res) => {
       });
     });
 
-    // Cross-validate with official spec evolution data
-    if (specEvolution && specEvolution.evolution) {
-      specEvolution.evolution.forEach((periodData, periodIndex) => {
+    // Normalize per-period averages for specTemporalData
+    Object.keys(specTemporalData).forEach((specIdStr) => {
+      const specIdNum = parseInt(specIdStr);
+      const entry = specTemporalData[specIdNum];
+      if (!entry) return;
+      for (let i = 0; i < maxPeriodsToProcess; i++) {
+        const appearances = entry.appearances[i] || 0;
+        if (appearances > 0) {
+          // Convert accumulated keystone sum to average for the period
+          entry.avgLevel[i] = Math.round(entry.avgLevel[i] / appearances);
+          // Convert success count to a rate percentage (0-100)
+          entry.successRates[i] = Math.round((entry.successRates[i] / appearances) * 100);
+        } else {
+          entry.avgLevel[i] = 0;
+          entry.successRates[i] = 0;
+        }
+      }
+    });
+
+    // Cross-validate with official spec evolution data (align to same window)
+    const slicedEvolution = (specEvolution && Array.isArray(specEvolution.evolution))
+      ? specEvolution.evolution.slice(-maxPeriodsToProcess)
+      : [];
+    if (slicedEvolution.length > 0) {
+      slicedEvolution.forEach((periodData, periodIndex) => {
         Object.entries(periodData.spec_counts).forEach(([specId, count]) => {
           const specIdNum = parseInt(specId);
           if (specTemporalData[specIdNum]) {
@@ -154,7 +234,7 @@ router.post('/predictions', async (req, res) => {
 
       Object.keys(specTemporalData).forEach(specId => {
         const specIdNum = parseInt(specId);
-        const periodsWithData = specEvolution.evolution.length;
+        const periodsWithData = slicedEvolution.length;
         if (periodsWithData > 0) {
           specTemporalData[specIdNum].crossValidationScore /= periodsWithData;
         }
@@ -162,9 +242,9 @@ router.post('/predictions', async (req, res) => {
     }
 
     // Prepare data for OpenAI
-    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini"; // Default to gpt-4o-mini for cost efficiency
+  const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini"; // Default to gpt-4o-mini for cost efficiency
     
-    const openAIPrompt = {
+  const openAIPromptBase = {
       model: openAIModel,
       messages: [
         {
@@ -176,6 +256,7 @@ CONTEXT:
 - You have temporal data showing spec appearances, success rates, and trends over time
 - You need to identify which specs are rising, declining, or stable in the meta
 - Consider factors like: usage trends, success rates, consistency, cross-validation accuracy
+- IMPORTANT: In temporalData, "successRates" are per-period percentages representing how often the spec's runs exceeded that period's average keystone level. They are NOT "timed" success rates.
 - You are analyzing data from a specific season
 - You know that a Mythic+ run is a 5 man group composed by a tank, a healer, a dps, a dps, and a dps
 - You can identify the role of a spec by the following mapping:
@@ -263,9 +344,12 @@ IMPORTANT:
 5. Respond ONLY with valid JSON in the exact format specified. Do not include any additional text, explanations, or markdown formatting. Start your response with { and end with }.`
         }
       ],
-      temperature: 0.3,
-      max_tokens: 10000
+      temperature: 0.2,
+      max_tokens: 3000,
+      seed: 42
     };
+    // Prefer JSON responses when the model supports it
+    const openAIPrompt = { ...openAIPromptBase, response_format: { type: "json_object" } };
 
     // Call OpenAI API with retry logic for rate limits
     console.log(`🤖 [AI] Calling OpenAI API for season ${seasonId}...`);
@@ -273,22 +357,32 @@ IMPORTANT:
     let openAIResponse;
     let retryCount = 0;
     const maxRetries = 3;
+    let triedWithoutJsonFormat = false;
     
     while (retryCount <= maxRetries) {
       try {
-        openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', openAIPrompt, {
+        openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt, {
           headers: {
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 60000 // 60 second timeout
+          timeout: 90000 // 90 second timeout
         });
         break; // Success, exit retry loop
       } catch (error) {
+        if (error.response?.status === 400 && !triedWithoutJsonFormat && (error.response?.data?.error?.message || '').toLowerCase().includes('response_format')) {
+          // Fallback if the model doesn't support JSON response_format
+          console.log(`🤖 [AI] response_format not supported by model '${openAIModel}', retrying without it...`);
+          triedWithoutJsonFormat = true;
+          continue;
+        }
         if (error.response?.status === 429 && retryCount < maxRetries) {
           retryCount++;
-          const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
-          console.log(`🤖 [AI] Rate limit hit, retrying in ${delay/1000}s (attempt ${retryCount}/${maxRetries})`);
+          // Respect Retry-After if present; otherwise exponential backoff with jitter
+          const retryAfterHeader = error.response?.headers?.['retry-after'];
+          let delay = retryAfterHeader ? Number(retryAfterHeader) * 1000 : Math.pow(2, retryCount) * 1000;
+          delay = Math.round(delay * (1 + Math.random() * 0.25));
+          console.log(`🤖 [AI] Rate limit hit, retrying in ${Math.round(delay/1000)}s (attempt ${retryCount}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
         } else {
           throw error; // Re-throw if not a 429 or max retries reached
@@ -298,7 +392,7 @@ IMPORTANT:
 
     const aiResponse = openAIResponse.data.choices[0].message.content;
     
-    let parsedResponse;
+  let parsedResponse;
 
     try {
       parsedResponse = JSON.parse(aiResponse);
@@ -394,6 +488,12 @@ IMPORTANT:
         dataQuality: 'Good'
       }
     };
+
+    // Lightweight schema validation before caching
+    const validation = validatePredictionsResponse(analysisResult);
+    if (!validation.ok) {
+      return res.status(500).json({ error: 'AI response failed validation', details: validation.errors.slice(0, 10) });
+    }
 
     // Cache the analysis result
     try {
@@ -786,7 +886,7 @@ router.post('/meta-health', async (req, res) => {
     });
 
     // Prepare data for OpenAI analysis
-    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
     const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to provide simple, clear insights about the current meta state.
 
@@ -914,38 +1014,48 @@ IMPORTANT:
 4. Do not include any additional text or markdown formatting
 5. Use the pre-calculated usage percentages from the SPEC USAGE DATA above - do NOT calculate percentages yourself`;
 
-    const openAIPrompt = {
+    const openAIPromptBase = {
       model: openAIModel,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      temperature: 0.3,
-      max_tokens: 12000
+      temperature: 0.2,
+      max_tokens: 4000,
+      seed: 42
     };
+    const openAIPrompt = { ...openAIPromptBase, response_format: { type: "json_object" } };
 
     // Call OpenAI API with retry logic for rate limits
     console.log(`🤖 [AI] Calling OpenAI API for meta health analysis...`);
     
-    let openAIResponse;
+  let openAIResponse;
     let retryCount = 0;
     const maxRetries = 3;
+  let triedWithoutJsonFormat = false;
     
     while (retryCount <= maxRetries) {
       try {
-        openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', openAIPrompt, {
+        openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt, {
           headers: {
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 60000
+          timeout: 90000
         });
         break; // Success, exit retry loop
       } catch (error) {
+        if (error.response?.status === 400 && !triedWithoutJsonFormat && (error.response?.data?.error?.message || '').toLowerCase().includes('response_format')) {
+          console.log(`🤖 [AI] response_format not supported by model '${openAIModel}', retrying without it...`);
+          triedWithoutJsonFormat = true;
+          continue;
+        }
         if (error.response?.status === 429 && retryCount < maxRetries) {
           retryCount++;
-          const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 2s, 4s, 8s
-          console.log(`🤖 [AI] Rate limit hit, retrying in ${delay/1000}s (attempt ${retryCount}/${maxRetries})`);
+          const retryAfterHeader = error.response?.headers?.['retry-after'];
+          let delay = retryAfterHeader ? Number(retryAfterHeader) * 1000 : Math.pow(2, retryCount) * 1000;
+          delay = Math.round(delay * (1 + Math.random() * 0.25));
+          console.log(`🤖 [AI] Rate limit hit, retrying in ${Math.round(delay/1000)}s (attempt ${retryCount}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
         } else {
           throw error; // Re-throw if not a 429 or max retries reached
@@ -996,6 +1106,10 @@ IMPORTANT:
     if (!parsedResponse.metaSummary || !parsedResponse.roleAnalysis || !parsedResponse.balanceIssues) {
       return res.status(500).json({ error: 'Invalid AI response format - missing required sections' });
     }
+    const mhValidation = validateMetaHealthResponse(parsedResponse);
+    if (!mhValidation.ok) {
+      return res.status(500).json({ error: 'AI meta_health response failed validation', details: mhValidation.errors.slice(0, 10) });
+    }
 
     // Remove duplicate specs within each role's dominant and underused specs
     Object.keys(parsedResponse.roleAnalysis).forEach(role => {
@@ -1030,6 +1144,11 @@ IMPORTANT:
 
     // Cache the analysis result
     try {
+      // Replace existing meta_health cache for this season to avoid duplicates
+      await db.pool.query(
+        'DELETE FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2',
+        [seasonId, 'meta_health']
+      );
       await db.pool.query(
         'INSERT INTO ai_analysis (season_id, analysis_data, analysis_type, confidence_score, data_quality) VALUES ($1, $2, $3, $4, $5)',
         [seasonId, parsedResponse, 'meta_health', 85, 'ai_generated']
