@@ -1110,4 +1110,31 @@ function printProgress(current, total, context = '') {
 
 router.use('/advanced', advancedRouter);
 
+// Lightweight endpoint: current season (DB-first)
+router.get('/advanced/current-season', async (req, res) => {
+  try {
+    const { rows } = await db.pool.query(
+      `SELECT id AS season_id, COALESCE(NULLIF(TRIM(name), ''), 'Season ' || id) AS season_name
+       FROM season
+       WHERE id = (SELECT MAX(id) FROM season)`
+    );
+    if (rows && rows[0]) return res.json(rows[0]);
+    // Fallback to constants if DB empty
+    const entries = Object.entries(require('../config/constants').SEASON_NAMES);
+    if (entries.length > 0) {
+      const max = entries.map(([id]) => Number(id)).sort((a, b) => b - a)[0];
+      return res.json({ season_id: max, season_name: require('../config/constants').SEASON_NAMES[max] });
+    }
+    return res.status(404).json({ error: 'No seasons available' });
+  } catch (e) {
+    console.warn('[current-season] DB error, falling back:', e.message);
+    const entries = Object.entries(require('../config/constants').SEASON_NAMES);
+    if (entries.length > 0) {
+      const max = entries.map(([id]) => Number(id)).sort((a, b) => b - a)[0];
+      return res.json({ season_id: max, season_name: require('../config/constants').SEASON_NAMES[max] });
+    }
+    return res.status(500).json({ error: 'Failed to resolve current season' });
+  }
+});
+
 module.exports = router; 

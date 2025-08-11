@@ -1,5 +1,6 @@
 const express = require('express');
 const proxyService = require('../services/proxy');
+const db = require('../services/db');
 const validateRegion = require('../middleware/region');
 const { SEASON_DUNGEONS, SEASON_NAMES, WOW_DUNGEONS, WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
 
@@ -94,6 +95,31 @@ const router = express.Router();
 router.use(validateRegion);
 
 // --- Helper functions ---
+async function getSeasonDungeonsFromDB(seasonId) {
+  try {
+    const { rows } = await db.pool.query('SELECT dungeon_id FROM season_dungeon WHERE season_id = $1 ORDER BY dungeon_id', [Number(seasonId)]);
+    return rows.map(r => r.dungeon_id);
+  } catch (e) {
+    console.warn('[ADVANCED] season_dungeon lookup failed:', e.message);
+    return [];
+  }
+}
+
+async function getAllSeasonIdsFromDB() {
+  try {
+    const { rows } = await db.pool.query('SELECT DISTINCT season_id FROM season_dungeon ORDER BY season_id');
+    return rows.map(r => r.season_id);
+  } catch (e) {
+    return [];
+  }
+}
+
+async function getSeasonDungeons(seasonId) {
+  const fromDb = await getSeasonDungeonsFromDB(seasonId);
+  if (fromDb && fromDb.length > 0) return fromDb;
+  const seasonNum = parseInt(seasonId, 10);
+  return SEASON_DUNGEONS[seasonNum] || [];
+}
 // Helper to map spec_id to class_id
 function getClassIdFromSpecId(specId) {
     const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
@@ -205,8 +231,9 @@ router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) 
     const { region } = req;
     const { seasonId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
-    if (SEASON_DUNGEONS[seasonNum]) {
-      return res.json({ seasonId, dungeons: SEASON_DUNGEONS[seasonNum], cached: true });
+    const cachedDungeons = await getSeasonDungeons(seasonNum);
+    if (cachedDungeons && cachedDungeons.length > 0) {
+      return res.json({ seasonId, dungeons: cachedDungeons, cached: true });
     }
     const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { ...req.query, id: seasonId });
     const periodsRaw = seasonResp.data.periods || [];
@@ -247,12 +274,16 @@ router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) 
       if (found) foundDungeons.push(dungeonId);
     }
     if (foundDungeons.length > 0 && seasonNum >= 1 && seasonNum <= 100) {
-      SEASON_DUNGEONS[seasonNum] = foundDungeons;
-      const constantsPath = path.join(__dirname, '../config/constants.js');
-      let constantsSrc = fs.readFileSync(constantsPath, 'utf8');
-      constantsSrc = constantsSrc.replace(/const SEASON_DUNGEONS = \{[\s\S]*?\};/,
-        `const SEASON_DUNGEONS = ${JSON.stringify(SEASON_DUNGEONS, null, 2)};`);
-      fs.writeFileSync(constantsPath, constantsSrc, 'utf8');
+      try {
+        await db.pool.query('DELETE FROM season_dungeon WHERE season_id = $1', [seasonNum]);
+        const placeholders = foundDungeons.map((_, i) => `($1, $${i + 2})`).join(',');
+        await db.pool.query(
+          `INSERT INTO season_dungeon (season_id, dungeon_id) VALUES ${placeholders} ON CONFLICT DO NOTHING`,
+          [seasonNum, ...foundDungeons]
+        );
+      } catch (e) {
+        console.warn('[ADVANCED] Failed to persist season_dungeon mapping:', e.message);
+      }
     }
     res.json({ seasonId, dungeons: foundDungeons, cached: false });
   } catch (error) {
@@ -264,11 +295,19 @@ router.get('/mythic-keystone-season/:seasonId/dungeons', async (req, res, next) 
 router.get('/mythic-keystone-season/:seasonId/name', async (req, res) => {
   console.log(`🔧 [ADVANCED] GET /advanced/mythic-keystone-season/${req.params.seasonId}/name`);
   const { seasonId } = req.params;
-  const name = SEASON_NAMES[seasonId] || null;
-  if (name) {
-    res.json({ seasonId, name });
-  } else {
-    res.status(404).json({ error: true, message: `No name found for seasonId ${seasonId}` });
+  try {
+    const result = await db.pool.query('SELECT name FROM season WHERE id = $1', [Number(seasonId)]);
+    const dbName = result.rows?.[0]?.name || null;
+    const name = dbName || SEASON_NAMES[seasonId] || null;
+    if (name) {
+      return res.json({ seasonId: Number(seasonId), name });
+    }
+    return res.status(404).json({ error: true, message: `No name found for seasonId ${seasonId}` });
+  } catch (e) {
+    console.warn('[SEASON NAME FALLBACK]', e.message);
+    const name = SEASON_NAMES[seasonId] || null;
+    if (name) return res.json({ seasonId: Number(seasonId), name });
+    return res.status(500).json({ error: true, message: 'Failed to resolve season name' });
   }
 });
 
@@ -294,7 +333,7 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
     
     const { seasonId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
-    const dungeons = SEASON_DUNGEONS[seasonNum];
+    const dungeons = await getSeasonDungeons(seasonNum);
     if (!dungeons || dungeons.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
     }
@@ -492,9 +531,12 @@ router.post('/mythic-leaderboard-retry', async (req, res, next) => {
           // Try to determine season from period ID by checking all seasons
           let seasonId = null;
           
-          // Check each season to see which one contains this period
-          for (const [seasonKey, dungeons] of Object.entries(SEASON_DUNGEONS)) {
-            const seasonNum = parseInt(seasonKey, 10);
+          // Check each season from DB (fallback to constants if DB empty)
+          let seasonIds = await getAllSeasonIdsFromDB();
+          if (!seasonIds || seasonIds.length === 0) {
+            seasonIds = Object.keys(SEASON_DUNGEONS).map(Number);
+          }
+          for (const seasonNum of seasonIds) {
             try {
               // Try to get the season data to see if this period belongs to it
               const seasonResp = await proxyService.getGameData('mythic-keystone-season', region, { id: seasonNum });
@@ -618,7 +660,7 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
     
     const { seasonId, periodId } = req.params;
     const seasonNum = parseInt(seasonId, 10);
-    const dungeons = SEASON_DUNGEONS[seasonNum];
+    const dungeons = await getSeasonDungeons(seasonNum);
     if (!dungeons || dungeons.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: `No dungeons found for season ${seasonId}` });
     }
@@ -736,14 +778,26 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
 // --- New endpoints for filter population ---
 
 // /advanced/seasons
-router.get('/seasons', (req, res) => {
+router.get('/seasons', async (req, res) => {
   console.log(`🔧 [ADVANCED] GET /advanced/seasons`);
-  // SEASON_NAMES is an object: { [seasonId]: seasonName }
+  try {
+    const { rows } = await db.pool.query(
+      `SELECT id AS season_id, COALESCE(NULLIF(TRIM(name), ''), 'Season ' || id) AS season_name
+       FROM season
+       ORDER BY id`
+    );
+    if (rows && rows.length > 0) {
+      return res.json(rows);
+    }
+  } catch (e) {
+    console.warn('[ADVANCED/seasons] DB lookup failed, falling back to constants:', e.message);
+  }
+  // Fallback to constants if DB is empty/unavailable
   const seasons = Object.entries(SEASON_NAMES).map(([season_id, season_name]) => ({
     season_id: Number(season_id),
     season_name
   }));
-  res.json(seasons);
+  return res.json(seasons);
 });
 
 // /advanced/season-info/:seasonId

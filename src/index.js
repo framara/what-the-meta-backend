@@ -13,6 +13,7 @@ const { populateDungeons, populateSeasons, populatePeriods, populateRealms } = r
 const metaRoutes = require('./routes/meta');
 const aiRoutes = require('./routes/ai');
 const { pool } = require('./services/db'); // <-- Import the pool
+const { backfillSeasonDungeonMappings } = require('./services/seasonBackfill');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -118,6 +119,9 @@ async function startServer() {
       console.log(`📚 Connected to DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
       console.log(``);
       console.log(`** SERVICE IS READY **`);
+
+      // Background backfill: season→dungeon mapping (clean service)
+      backfillSeasonDungeonMappings(PORT);
     });
   } catch (err) {
     console.error('❌ Failed to connect to DB or populate data:', err);

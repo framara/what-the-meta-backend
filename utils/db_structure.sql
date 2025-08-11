@@ -4,6 +4,7 @@
 -- Drop tables in dependency order
 DROP TABLE IF EXISTS run_group_member CASCADE;
 DROP TABLE IF EXISTS leaderboard_run CASCADE;
+DROP TABLE IF EXISTS season_dungeon CASCADE;
 DROP TABLE IF EXISTS dungeon CASCADE;
 DROP TABLE IF EXISTS period CASCADE;
 DROP TABLE IF EXISTS realm CASCADE;
@@ -38,6 +39,13 @@ CREATE TABLE public.season (
     start_date date,
     end_date date,
     PRIMARY KEY (id)
+);
+
+-- Mapping of season to its active dungeons (DB-driven instead of hardcoding)
+CREATE TABLE public.season_dungeon (
+    season_id integer NOT NULL REFERENCES public.season(id) ON DELETE CASCADE,
+    dungeon_id integer NOT NULL REFERENCES public.dungeon(id) ON DELETE RESTRICT,
+    PRIMARY KEY (season_id, dungeon_id)
 );
 
 CREATE TABLE public.leaderboard_run (

@@ -1,3 +1,38 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.*
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build & Coverage
+dist/
+build/
+coverage/
+
+# App runtime/output
+src/output/
+logs/
+*.log
+
+# Postgres runtime data and backups (should not be committed)
+pgdata/
+backups/
+*.pgsql
+*.tar.gz
+
+# Docker
+*.pid
+
 # Dependencies
 node_modules/
 npm-debug.log*
