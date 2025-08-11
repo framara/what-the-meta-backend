@@ -4,7 +4,7 @@ const db = require('../services/db');
 const { getAllRegions } = require('../config/regions');
 const fs = require('fs');
 const path = require('path');
-const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES } = require('../config/constants');
+const { WOW_SPECIALIZATIONS, WOW_SPEC_ROLES, SEASON_METADATA } = require('../config/constants');
 
 // Try to import p-limit with error handling
 let pLimit;
@@ -98,10 +98,32 @@ async function populateSeasons() {
   let inserted = 0, failed = 0;
   for (const s of seasons) {
     const id = s.id;
-    const name = s.name || `Season ${id}`;
+    const constantsName = (SEASON_METADATA && SEASON_METADATA[id] && SEASON_METADATA[id].name) ? SEASON_METADATA[id].name : null;
+    const apiName = s.name && String(s.name).trim() !== '' ? s.name : null;
+    const name = constantsName || apiName || `Season ${id}`;
+
+    // Try to get start/end timestamps from the season detail endpoint
+    let startDate = null;
+    let endDate = null;
+    try {
+      const detail = await proxyService.getGameData('mythic-keystone-season', region, { id });
+      const startTs = detail?.data?.start_timestamp;
+      const endTs = detail?.data?.end_timestamp;
+      if (typeof startTs === 'number' && Number.isFinite(startTs)) {
+        startDate = new Date(startTs).toISOString().slice(0, 10); // YYYY-MM-DD
+      }
+      if (typeof endTs === 'number' && Number.isFinite(endTs)) {
+        endDate = new Date(endTs).toISOString().slice(0, 10);
+      }
+    } catch (e) {
+      // If detail call fails, leave dates null
+    }
+
     const result = await db.pool.query(
-      'INSERT INTO season (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name',
-      [id, name]
+      `INSERT INTO season (id, name, start_date, end_date)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, start_date = COALESCE(EXCLUDED.start_date, season.start_date), end_date = COALESCE(EXCLUDED.end_date, season.end_date)`,
+      [id, name, startDate, endDate]
     );
     if (result.rowCount > 0) inserted++; else failed++;
   }
@@ -125,9 +147,30 @@ async function populatePeriods() {
         periodId = match ? parseInt(match[1], 10) : null;
       }
       if (periodId) {
+        // Fetch period details to capture start/end timestamps
+        let startDate = null;
+        let endDate = null;
+        try {
+          const detail = await proxyService.getGameData('mythic-keystone-period', region, { id: periodId });
+          const startTs = detail?.data?.start_timestamp;
+          const endTs = detail?.data?.end_timestamp;
+          if (typeof startTs === 'number' && Number.isFinite(startTs)) {
+            startDate = new Date(startTs).toISOString().slice(0, 10);
+          }
+          if (typeof endTs === 'number' && Number.isFinite(endTs)) {
+            endDate = new Date(endTs).toISOString().slice(0, 10);
+          }
+        } catch (e) {
+          // silent fallback; leave dates null
+        }
         const result = await db.pool.query(
-          'INSERT INTO period (id, season_id) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET season_id = EXCLUDED.season_id',
-          [periodId, seasonId]
+          `INSERT INTO period (id, season_id, start_date, end_date)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (id) DO UPDATE SET 
+             season_id = EXCLUDED.season_id,
+             start_date = COALESCE(EXCLUDED.start_date, period.start_date),
+             end_date = COALESCE(EXCLUDED.end_date, period.end_date)`,
+          [periodId, seasonId, startDate, endDate]
         );
         if (result.rowCount > 0) inserted++; else failed++;
       }

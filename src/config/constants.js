@@ -621,7 +621,16 @@ const SEASON_METADATA = {
   12: { expansion: 'Dragonflight', patch: '10.2.6', name: 'DF S4' },
   13: { expansion: 'The War Within', patch: '11.0', name: 'TWW S1' },
   14: { expansion: 'The War Within', patch: '11.1', name: 'TWW S2' },
-  15: { expansion: 'The War Within', patch: '11.2', name: 'TWW S3' }
+  15: { expansion: 'The War Within', patch: '11.2', name: 'TWW S3' }, 
+  16: { expansion: 'The War Within', patch: '11.3', name: 'TWW S4' }, 
+  17: { expansion: 'Midnight', patch: '12.0', name: 'MN S1' }, 
+  18: { expansion: 'Midnight', patch: '12.1', name: 'MN S2' }, 
+  19: { expansion: 'Midnight', patch: '12.2', name: 'MN S3' }, 
+  20: { expansion: 'Midnight', patch: '12.3', name: 'MN S4' }, 
+  21: { expansion: 'The Last Titan', patch: '13.0', name: 'TLT S1' }, 
+  22: { expansion: 'The Last Titan', patch: '13.1', name: 'TLT S2' }, 
+  23: { expansion: 'The Last Titan', patch: '13.2', name: 'TLT S3' }, 
+  24: { expansion: 'The Last Titan', patch: '13.3', name: 'TLT S4' }, 
 };
 
 const EXPANSION_METADATA = {
