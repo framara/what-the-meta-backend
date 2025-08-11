@@ -77,8 +77,8 @@ class BattleNetOAuthClient {
    * @param {Object} params - Query parameters
    * @returns {Promise<Object>} API response
    */
-  async get(endpoint, region = 'us', params = {}) {
-    return this.request(endpoint, region, { params });
+  async get(endpoint, region = 'us', params = {}, options = {}) {
+    return this.request(endpoint, region, { params, ...options });
   }
 
   /**
@@ -89,11 +89,12 @@ class BattleNetOAuthClient {
    * @param {Object} params - Query parameters
    * @returns {Promise<Object>} API response
    */
-  async post(endpoint, region = 'us', data = {}, params = {}) {
+  async post(endpoint, region = 'us', data = {}, params = {}, options = {}) {
     return this.request(endpoint, region, {
       method: 'POST',
       data,
-      params
+      params,
+      ...options
     });
   }
 
@@ -103,7 +104,14 @@ class BattleNetOAuthClient {
    * @returns {Promise<Object>} Token response
    */
   async getClientCredentialsToken(region = 'us') {
-    return this.post('/oauth/token', region, 'grant_type=client_credentials', {}, { useClientAuth: true });
+    // Client credentials grant requires form-encoded body and Basic auth
+    return this.post(
+      '/oauth/token',
+      region,
+      'grant_type=client_credentials',
+      {},
+      { useClientAuth: true }
+    );
   }
 
   /**
@@ -113,9 +121,12 @@ class BattleNetOAuthClient {
    * @returns {Promise<Object>} User info response
    */
   async getUserInfo(accessToken, region = 'us') {
-    return this.get('/oauth/userinfo', region, {}, {
-      headers: { 'Authorization': `Bearer ${accessToken}` }
-    });
+    return this.get(
+      '/oauth/userinfo',
+      region,
+      {},
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
   }
 
   /**
@@ -125,7 +136,14 @@ class BattleNetOAuthClient {
    * @returns {Promise<Object>} Token validation response
    */
   async checkToken(token, region = 'us') {
-    return this.post('/oauth/check_token', region, { token });
+    // Token introspection requires client auth and form-encoded body
+    return this.post(
+      '/oauth/check_token',
+      region,
+      `token=${encodeURIComponent(token)}`,
+      {},
+      { useClientAuth: true }
+    );
   }
 
   /**

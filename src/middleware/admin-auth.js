@@ -27,10 +27,15 @@ function adminAuthMiddleware(req, res, next) {
 
   // Compare API keys using constant-time comparison to prevent timing attacks
   const crypto = require('crypto');
-  const isValid = crypto.timingSafeEqual(
-    Buffer.from(apiKey),
-    Buffer.from(validApiKey)
-  );
+  const provided = Buffer.from(apiKey);
+  const expected = Buffer.from(validApiKey);
+  if (provided.length !== expected.length) {
+    return res.status(HTTP_STATUS.FORBIDDEN).json({
+      error: true,
+      message: 'Invalid admin API key'
+    });
+  }
+  const isValid = crypto.timingSafeEqual(provided, expected);
 
   if (!isValid) {
     return res.status(HTTP_STATUS.FORBIDDEN).json({

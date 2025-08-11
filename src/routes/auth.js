@@ -6,7 +6,14 @@ const { getUserTokenFromCode } = require('../services/blizzard/auth');
 router.get('/blizzard/login', (req, res) => {
   console.log(`🔑 [AUTH] GET /auth/blizzard/login`);
   const clientId = process.env.BLIZZARD_CLIENT_ID;
-  const redirectUri = encodeURIComponent(process.env.BLIZZARD_REDIRECT_URI);
+  const redirect = process.env.BLIZZARD_REDIRECT_URI;
+  if (!clientId || !redirect) {
+    return res.status(500).json({
+      error: true,
+      message: 'Server configuration error: BLIZZARD_CLIENT_ID or BLIZZARD_REDIRECT_URI is not set'
+    });
+  }
+  const redirectUri = encodeURIComponent(redirect);
   const scope = encodeURIComponent('wow.profile');
   const state = Math.random().toString(36).substring(2);
   const authUrl = `https://oauth.battle.net/authorize?client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}&response_type=code&state=${state}`;
