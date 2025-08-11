@@ -18,6 +18,13 @@ const { backfillSeasonDungeonMappings } = require('./services/seasonBackfill');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Helper to parse boolean-like env flags
+function parseEnvFlag(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  const normalized = String(value).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
 // Security middleware
 app.use(helmet());
 
@@ -88,29 +95,39 @@ async function startServer() {
     console.log('✅ Connected to PostgreSQL DB');
     console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
 
-    console.log('🔄 Starting parallel population of database tables...');
-    
-    // Run all populate functions in parallel
-    const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
-      populateDungeons(),
-      populateSeasons(),
-      populatePeriods(),
-      populateRealms()
-    ]);
+    // Determine flags for heavy startup tasks
+    const isProd = (process.env.NODE_ENV || 'development') === 'production';
+    const autoPopulateDefault = isProd ? false : true;
+    const backfillDefault = isProd ? false : true;
+    const shouldAutoPopulate = parseEnvFlag(process.env.AUTO_POPULATE_ON_START, autoPopulateDefault);
+    const shouldBackfill = parseEnvFlag(process.env.SEASON_BACKFILL_ON_START, backfillDefault);
 
-    // Log results with status
-    console.log('📊 Population Results:');
-    console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
-    console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
-    console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
-    console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+    if (shouldAutoPopulate) {
+      console.log('🔄 Starting parallel population of database tables...');
+      // Run all populate functions in parallel
+      const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+        populateDungeons(),
+        populateSeasons(),
+        populatePeriods(),
+        populateRealms()
+      ]);
 
-    // Check if any population failed
-    const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult]
-      .filter(result => result.status === 'rejected');
-    
-    if (failedPopulations.length > 0) {
-      console.warn(`⚠️ ${failedPopulations.length} population(s) failed, but continuing with server startup...`);
+      // Log results with status
+      console.log('📊 Population Results:');
+      console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
+      console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
+      console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
+      console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+
+      // Check if any population failed
+      const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult]
+        .filter(result => result.status === 'rejected');
+      
+      if (failedPopulations.length > 0) {
+        console.warn(`⚠️ ${failedPopulations.length} population(s) failed, but continuing with server startup...`);
+      }
+    } else {
+      console.log('⏭️ Skipping DB population on start (AUTO_POPULATE_ON_START disabled)');
     }
 
     app.listen(PORT, () => {
@@ -121,7 +138,12 @@ async function startServer() {
       console.log(`** SERVICE IS READY **`);
 
       // Background backfill: season→dungeon mapping (clean service)
-      backfillSeasonDungeonMappings(PORT);
+      if (shouldBackfill) {
+        console.log('🔁 Starting background season→dungeon backfill...');
+        backfillSeasonDungeonMappings(PORT);
+      } else {
+        console.log('⏭️ Skipping background season→dungeon backfill (SEASON_BACKFILL_ON_START disabled)');
+      }
     });
   } catch (err) {
     console.error('❌ Failed to connect to DB or populate data:', err);
