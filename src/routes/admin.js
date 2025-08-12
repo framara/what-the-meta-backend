@@ -1099,6 +1099,100 @@ router.post('/vacuum-analyze', async (req, res) => {
   }
 });
 
+// --- Simple DB-backed job lock ---
+// Ensures only one long-running job (e.g., daily vs weekly) runs at a time
+async function ensureJobLockTable(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS job_lock (
+      lock_name TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      job TEXT,
+      acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+  `);
+}
+
+// POST /admin/job-lock/acquire
+// Body: { lock_name: string, owner: string, ttl_seconds?: number, job?: string }
+router.post('/job-lock/acquire', async (req, res) => {
+  const { lock_name, owner, ttl_seconds = 21600, job = null } = req.body || {};
+  if (!lock_name || !owner) {
+    return res.status(400).json({ status: 'NOT OK', error: 'lock_name and owner are required' });
+  }
+
+  const client = await db.pool.connect();
+  try {
+    await ensureJobLockTable(client);
+
+    // Try to acquire atomically. If lock exists but expired, take it over.
+    const result = await client.query(
+      `
+      INSERT INTO job_lock (lock_name, owner, job, acquired_at, expires_at)
+      VALUES ($1, $2, $3, NOW(), NOW() + ($4 || ' seconds')::INTERVAL)
+      ON CONFLICT (lock_name)
+      DO UPDATE SET
+        owner = EXCLUDED.owner,
+        job = EXCLUDED.job,
+        acquired_at = NOW(),
+        expires_at = NOW() + ($4 || ' seconds')::INTERVAL
+      WHERE job_lock.expires_at < NOW()
+      RETURNING lock_name, owner, job, acquired_at, expires_at;
+      `,
+      [lock_name, owner, job, ttl_seconds.toString()]
+    );
+
+    if (result.rowCount === 0) {
+      // Lock is currently held and not expired
+      const { rows } = await client.query('SELECT lock_name, owner, job, acquired_at, expires_at FROM job_lock WHERE lock_name = $1', [lock_name]);
+      const current = rows[0];
+      return res.status(409).json({ status: 'LOCKED', message: 'Lock is already held', current });
+    }
+
+    return res.json({ status: 'OK', lock: result.rows[0] });
+  } catch (error) {
+    return res.status(500).json({ status: 'NOT OK', error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /admin/job-lock/release
+// Body: { lock_name: string, owner: string }
+router.post('/job-lock/release', async (req, res) => {
+  const { lock_name, owner } = req.body || {};
+  if (!lock_name || !owner) {
+    return res.status(400).json({ status: 'NOT OK', error: 'lock_name and owner are required' });
+  }
+
+  try {
+    const result = await db.pool.query('DELETE FROM job_lock WHERE lock_name = $1 AND owner = $2', [lock_name, owner]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ status: 'NOT OK', error: 'Lock not found for this owner (may have expired or been taken over)' });
+    }
+    return res.json({ status: 'OK', released: true });
+  } catch (error) {
+    return res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/job-lock/status?lock_name=...
+router.get('/job-lock/status', async (req, res) => {
+  const lock_name = req.query.lock_name;
+  if (!lock_name) {
+    return res.status(400).json({ status: 'NOT OK', error: 'lock_name is required' });
+  }
+  try {
+    const { rows } = await db.pool.query('SELECT lock_name, owner, job, acquired_at, expires_at FROM job_lock WHERE lock_name = $1', [lock_name]);
+    if (rows.length === 0) return res.json({ status: 'OK', locked: false });
+    const lock = rows[0];
+    const locked = new Date(lock.expires_at) > new Date();
+    return res.json({ status: 'OK', locked, lock });
+  } catch (error) {
+    return res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
 // --- Database monitoring endpoints ---
 
 // GET /admin/db/stats - Get database performance statistics
