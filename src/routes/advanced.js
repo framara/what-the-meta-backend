@@ -468,6 +468,8 @@ router.get('/mythic-leaderboard/:seasonId/', async (req, res, next) => {
     }
 
     const succeeded = totalFiles - failedCount;
+    const filesWritten = allFiles.length;
+    console.log(`[ADVANCED] Mythic leaderboard dump complete for season ${seasonId}. Files written: ${filesWritten}/${totalFiles}. Failed: ${failedCount}. Regions: ${regionsToProcess.join(', ')}`);
     res.json({
       status: failedCount === 0 ? 'OK' : 'PARTIAL',
       message: 'Data written to JSON files',
@@ -760,6 +762,8 @@ router.get('/mythic-leaderboard/:seasonId/:periodId', async (req, res, next) => 
     }
 
     const succeeded = totalFiles - failedCount;
+    const filesWritten = allFiles.length;
+    console.log(`[ADVANCED] Mythic leaderboard dump complete for season ${seasonId}, period ${periodId}. Files written: ${filesWritten}/${totalFiles}. Failed: ${failedCount}. Regions: ${regionsToProcess.join(', ')}`);
     res.json({
       status: failedCount === 0 ? 'OK' : 'PARTIAL',
       message: 'Data written to JSON files',
