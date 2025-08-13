@@ -1,0 +1,32 @@
+name: Raider.IO Latest Cutoffs Automation
+
+on:
+  schedule:
+    # Run every 12 hours at 00:00 and 12:00 UTC
+    - cron: '0 0 * * *'
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  trigger-automation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: render-rio-latest-automation
+      cancel-in-progress: true
+    steps:
+      - name: Trigger Raider.IO Latest Cutoffs Job
+        run: |
+          echo "🚀 Triggering Raider.IO latest cutoffs job..."
+          curl --fail-with-body -X POST "https://api.render.com/v1/services/$SERVICE_ID/jobs" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"startCommand": "BACKFILL_REGIONS=us,eu,kr,tw BACKFILL_CONCURRENCY=1 BACKFILL_MAIN_SEASONS_ONLY=true BACKFILL_STRICT=true BACKFILL_MAX_PAGES=200 BACKFILL_STALL_PAGES=50 BACKFILL_INCLUDE_PLAYERS=false BACKFILL_DUNGEON_ALL=true BACKFILL_OVERSCAN=true npm run rio-latest-job"}' \
+            -w "\nHTTP Status: %{http_code}\n"
+          echo "✅ Automation triggered successfully!"
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ vars.SERVICE_ID }}
+
+

@@ -8,7 +8,8 @@
     "dev": "nodemon src/index.js",
     "test": "jest",
     "daily-job": "node scripts/job-daily-current-period.js",
-    "weekly-job": "node scripts/job-weekly-previous-period.js"
+    "weekly-job": "node scripts/job-weekly-previous-period.js",
+    "rio-latest-job": "node scripts/job-latest-raiderio-cutoffs.js"
   },
   "keywords": [
     "blizzard",
