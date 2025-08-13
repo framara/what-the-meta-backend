@@ -1448,4 +1448,108 @@ router.get('/analysis/:season_id', async (req, res) => {
   }
 });
 
+// POST /ai/affix-insights
+// MVP: Affix-aware insights using week-over-week deltas; cached per (seasonId, periodId)
+router.post('/affix-insights', async (req, res) => {
+  try {
+    const { seasonId, periodId: requestedPeriodId, dungeonId } = req.body || {};
+    if (!seasonId) return res.status(400).json({ error: 'Missing required data: seasonId' });
+
+    // Fetch required season data
+    const compositionData = await getCompositionDataForSeason(seasonId);
+    const specEvolution = await getSpecEvolutionForSeason(seasonId);
+    if (!compositionData || !specEvolution) {
+      return res.status(404).json({ error: 'No data available for this season' });
+    }
+
+    // Resolve target period: use provided or latest non-empty
+    const nonEmptyPeriods = (compositionData.periods || []).filter(p => (p.keys_count || 0) > 0);
+    if (nonEmptyPeriods.length === 0) {
+      return res.status(404).json({ error: 'No non-empty periods found for this season' });
+    }
+    const latestPeriod = nonEmptyPeriods[nonEmptyPeriods.length - 1];
+    const periodId = requestedPeriodId || latestPeriod.period_id;
+
+    // Cache key per season+period
+    const analysisType = `affix_insights_${periodId}${dungeonId ? `_d${dungeonId}` : ''}`;
+
+    // Check cache (24h)
+    const cached = await db.pool.query(
+      'SELECT analysis_data, created_at FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2 ORDER BY created_at DESC LIMIT 1',
+      [seasonId, analysisType]
+    );
+    if (cached.rows.length > 0) {
+      const row = cached.rows[0];
+      const ageMs = Date.now() - new Date(row.created_at).getTime();
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        const data = typeof row.analysis_data === 'string' ? JSON.parse(row.analysis_data) : row.analysis_data;
+        return res.json({ ...data, _cache: { created_at: row.created_at, age_hours: Math.round(ageMs / 3600000), max_age_hours: 24 } });
+      }
+    }
+
+    // Find current and previous evolution entries
+    const evo = specEvolution.evolution || [];
+    const currentIdx = evo.findIndex(e => e.period_id === periodId);
+    const idx = currentIdx >= 0 ? currentIdx : evo.length - 1;
+    const current = evo[idx];
+    const previous = idx > 0 ? evo[idx - 1] : null;
+    if (!current || !current.spec_counts) {
+      return res.status(404).json({ error: 'No evolution data for requested period' });
+    }
+
+    // Optionally filter by dungeon (MVP: skip filtering; placeholder retained)
+    // Compute usage shares per spec for current and previous
+    const sumCounts = (obj) => Object.values(obj || {}).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+    const curTotal = Math.max(1, sumCounts(current.spec_counts));
+    const prevTotal = Math.max(1, sumCounts(previous?.spec_counts || {}));
+
+    const specIds = Array.from(new Set([...Object.keys(current.spec_counts), ...Object.keys(previous?.spec_counts || {})])).map(Number);
+    const changes = specIds.map((sid) => {
+      const cur = (current.spec_counts[sid] || 0) / curTotal;
+      const prev = (previous?.spec_counts?.[sid] || 0) / prevTotal;
+      const delta = cur - prev; // share delta
+      const magnitude = Math.abs(delta);
+      // Confidence heuristic: base 60 + scaled by magnitude and sample size
+      const confidence = Math.max(50, Math.min(95, Math.round(60 + magnitude * 200 + Math.min(curTotal, 2000) / 200)));
+      return { specId: sid, delta, confidence };
+    });
+
+    const winners = changes
+      .filter(c => c.delta > 0)
+      .sort((a, b) => b.delta - a.delta)
+      .slice(0, 6)
+      .map(c => ({ specId: c.specId, reason: `Week-over-week usage share increased by ${(c.delta * 100).toFixed(1)}%.`, confidence: c.confidence }));
+
+    const losers = changes
+      .filter(c => c.delta < 0)
+      .sort((a, b) => a.delta - b.delta)
+      .slice(0, 6)
+      .map(c => ({ specId: c.specId, reason: `Week-over-week usage share decreased by ${(Math.abs(c.delta) * 100).toFixed(1)}%.`, confidence: c.confidence }));
+
+    const response = {
+      summary: `Period ${current.week || ''}: ${winners.length} rising, ${losers.length} declining specs compared to previous week.`.trim(),
+      winners,
+      losers,
+      dungeonTips: [],
+      citations: { periodIds: previous ? [previous.period_id, current.period_id] : [current.period_id] }
+    };
+
+    try {
+      // Replace existing cache row for this key
+      await db.pool.query('DELETE FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2', [seasonId, analysisType]);
+      await db.pool.query(
+        'INSERT INTO ai_analysis (season_id, analysis_data, analysis_type, confidence_score, data_quality) VALUES ($1, $2, $3, $4, $5)',
+        [seasonId, JSON.stringify(response), analysisType, 80, 'good']
+      );
+    } catch (cacheErr) {
+      console.warn('Affix insights cache write failed:', cacheErr.message);
+    }
+
+    return res.json(response);
+  } catch (err) {
+    console.error('[AI AFFIX INSIGHTS ERROR]', err);
+    return res.status(500).json({ error: 'Failed to generate affix insights' });
+  }
+});
+
 module.exports = router; 

@@ -5,6 +5,8 @@ const axios = require('axios');
 // Configuration for Render DAILY Job
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const REGIONS = ['us', 'eu', 'kr', 'tw'];
+const LOCK_NAME = process.env.JOB_LOCK_NAME || 'automation-global-lock';
+let HAS_LOCK = false;
 
 // Helper function to make API requests with retry logic
 async function makeRequest(method, endpoint, data = null, retries = 3) {
@@ -47,6 +49,67 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
+}
+
+// Job lock helpers
+function getLockOwner() {
+  const origin = process.env.RENDER_INSTANCE_ID || process.env.HOSTNAME || 'local';
+  return process.env.JOB_LOCK_OWNER || `${origin}:daily:${process.pid}`;
+}
+
+async function acquireJobLock(ttlSeconds = undefined) {
+  try {
+    const body = { lock_name: LOCK_NAME, owner: getLockOwner(), job: 'daily' };
+    if (ttlSeconds) body.ttl_seconds = ttlSeconds;
+    const resp = await makeRequest('POST', '/admin/job-lock/acquire', body, 1);
+    console.log('[DAILY] Acquired job lock');
+    HAS_LOCK = true;
+    return { acquired: true, lock: resp.lock || resp };
+  } catch (err) {
+    const data = err.response?.data;
+    if (data && data.status === 'LOCKED') {
+      console.log(`[DAILY] Job lock is held by owner ${data.current?.owner} until ${data.current?.expires_at}`);
+      return { acquired: false, current: data.current };
+    }
+    throw err;
+  }
+}
+
+async function releaseJobLock() {
+  try {
+    if (!HAS_LOCK) return;
+    await makeRequest('POST', '/admin/job-lock/release', { lock_name: LOCK_NAME, owner: getLockOwner() }, 1);
+    HAS_LOCK = false;
+    console.log('[DAILY] Released job lock');
+  } catch (err) {
+    console.warn('[DAILY] Failed to release job lock (it may have expired or been taken over):', err.response?.data || err.message);
+  }
+}
+
+function setupSignalHandlers() {
+  let shuttingDown = false;
+  const gracefulExit = async (code = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { await releaseJobLock(); } catch (_) {}
+    process.exit(code);
+  };
+  process.on('SIGINT', () => {
+    console.log('[DAILY] Caught SIGINT');
+    gracefulExit(130);
+  });
+  process.on('SIGTERM', () => {
+    console.log('[DAILY] Caught SIGTERM');
+    gracefulExit(143);
+  });
+  process.on('uncaughtException', async (err) => {
+    console.error('[DAILY] Uncaught exception:', err);
+    await gracefulExit(1);
+  });
+  process.on('unhandledRejection', async (reason) => {
+    console.error('[DAILY] Unhandled rejection:', reason);
+    await gracefulExit(1);
+  });
 }
 
 // Helper function to get the latest season and period
@@ -175,6 +238,37 @@ async function refreshViews() {
   }
 }
 
+// Pre-step: Populate reference data (seasons, dungeons, periods, realms)
+async function populateReferenceData() {
+  console.log('[DAILY] Populating reference data (seasons, dungeons, periods, realms)');
+  const results = {};
+  try {
+    const [seasonsRes, dungeonsRes, periodsRes, realmsRes] = await Promise.allSettled([
+      makeRequest('POST', '/admin/populate-seasons'),
+      makeRequest('POST', '/admin/populate-dungeons'),
+      makeRequest('POST', '/admin/populate-periods'),
+      makeRequest('POST', '/admin/populate-realms')
+    ]);
+
+    results.seasons = seasonsRes.status === 'fulfilled' ? seasonsRes.value : { status: 'ERROR', error: seasonsRes.reason?.message || String(seasonsRes.reason) };
+    results.dungeons = dungeonsRes.status === 'fulfilled' ? dungeonsRes.value : { status: 'ERROR', error: dungeonsRes.reason?.message || String(dungeonsRes.reason) };
+    results.periods = periodsRes.status === 'fulfilled' ? periodsRes.value : { status: 'ERROR', error: periodsRes.reason?.message || String(periodsRes.reason) };
+    results.realms = realmsRes.status === 'fulfilled' ? realmsRes.value : { status: 'ERROR', error: realmsRes.reason?.message || String(realmsRes.reason) };
+
+    console.log('[DAILY] Populate results:', {
+      seasons: results.seasons.status || 'OK',
+      dungeons: results.dungeons.status || 'OK',
+      periods: results.periods.status || 'OK',
+      realms: results.realms.status || 'OK'
+    });
+
+    return results;
+  } catch (error) {
+    console.error('[DAILY ERROR] Failed during populate reference data:', error.message);
+    throw error;
+  }
+}
+
 async function vacuumAnalyze() {
   console.log('[DAILY] Performing VACUUM ANALYZE on database');
   
@@ -195,6 +289,20 @@ async function runOneOffAutomation() {
   console.log(`[DAILY] API Base URL: ${API_BASE_URL}`);
   
   try {
+    // Acquire global job lock (default TTL handled by server)
+    const lock = await acquireJobLock();
+    if (!lock.acquired) {
+      return {
+        status: 'skipped',
+        reason: 'Another job is running',
+        holder: lock.current
+      };
+    }
+    
+    // Step 0: Populate reference data
+    console.log('\n=== STEP 0: Populating reference data ===');
+    const populateResult = await populateReferenceData();
+    
     // Step 1: Fetch leaderboard data for all regions
     console.log('\n=== STEP 1: Fetching leaderboard data ===');
     const fetchResult = await fetchLeaderboardData();
@@ -225,10 +333,13 @@ async function runOneOffAutomation() {
     console.log(`\n[DAILY] DAILY automation completed successfully at ${endTime.toISOString()}`);
     console.log(`[DAILY] Total duration: ${duration} seconds`);
     
+    await releaseJobLock();
+
     return {
       status: 'success',
       duration,
       results: {
+        populate: populateResult,
         fetch: fetchResult,
         import: importResult,
         clear: clearResult,
@@ -246,6 +357,8 @@ async function runOneOffAutomation() {
     console.error(`[DAILY] Total duration: ${duration} seconds`);
     console.error(`[DAILY] Error: ${error.message}`);
     
+    await releaseJobLock();
+
     return {
       status: 'error',
       duration,
@@ -256,9 +369,10 @@ async function runOneOffAutomation() {
 
 // Run the automation if this script is executed directly
 if (require.main === module) {
+  setupSignalHandlers();
   runOneOffAutomation()
     .then(result => {
-      if (result.status === 'success') {
+      if (result.status === 'success' || result.status === 'skipped') {
         console.log('[DAILY] Automation completed successfully');
         process.exit(0);
       } else {
