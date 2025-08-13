@@ -17,7 +17,9 @@ const EXPANSIONS = (process.env.RIO_EXPANSIONS || '10,9')
   .split(',')
   .map(s => Number(s.trim()))
   .filter(n => Number.isFinite(n));
-const LOCK_NAME = process.env.JOB_LOCK_NAME || 'raiderio-latest-cutoffs-lock';
+// Use a dedicated lock name for this job so it never conflicts with daily/weekly,
+// even if JOB_LOCK_NAME is set globally in the environment.
+const LOCK_NAME = process.env.RIO_JOB_LOCK_NAME || 'raiderio-latest-cutoffs-lock';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || process.env.ADMIN_KEY || '';
 let HAS_LOCK = false;
 
