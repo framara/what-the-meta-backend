@@ -191,7 +191,15 @@ async function importLeaderboardData() {
     console.log('[DAILY] Successfully imported leaderboard data');
     return response;
   } catch (error) {
-    console.error('[DAILY ERROR] Failed to import leaderboard data:', error.message);
+    const status = error?.response?.status;
+    const errData = error?.response?.data;
+    const errMsg = errData?.error || error.message;
+    // Treat missing/empty output directory as a no-op instead of a hard failure
+    if (status === 404 && (errMsg?.includes('Output directory not found') || errMsg?.includes('No JSON files found'))) {
+      console.warn('[DAILY] No files to import (output directory missing or empty). Skipping import.');
+      return { status: 'OK', totalRuns: 0, totalMembers: 0, results: [], note: 'No files to import' };
+    }
+    console.error('[DAILY ERROR] Failed to import leaderboard data:', errMsg);
     throw error;
   }
 }
@@ -205,7 +213,15 @@ async function clearOutput() {
     console.log('[DAILY] Successfully cleared output directory');
     return response;
   } catch (error) {
-    console.error('[DAILY ERROR] Failed to clear output directory:', error.message);
+    const status = error?.response?.status;
+    const errData = error?.response?.data;
+    const errMsg = errData?.error || error.message;
+    // If directory does not exist, consider it already cleared
+    if (status === 404 && errMsg?.includes('Output directory not found')) {
+      console.warn('[DAILY] Output directory does not exist. Considered already cleared.');
+      return { status: 'OK', deleted: [], errors: [], note: 'Output directory was missing' };
+    }
+    console.error('[DAILY ERROR] Failed to clear output directory:', errMsg);
     throw error;
   }
 }
