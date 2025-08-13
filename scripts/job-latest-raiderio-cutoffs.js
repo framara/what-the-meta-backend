@@ -23,6 +23,27 @@ let HAS_LOCK = false;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Env helpers (shared)
+function getEnvBool(keys, defaultVal = false) {
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(process.env, k)) {
+      const v = String(process.env[k]).toLowerCase();
+      return v === 'true' || v === '1' || v === 'yes';
+    }
+  }
+  return defaultVal;
+}
+
+function getEnvNumber(keys) {
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(process.env, k)) {
+      const n = Number(process.env[k]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return NaN;
+}
+
 // Helper: make API request with retries
 async function makeRequest(method, endpoint, data = null, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -194,7 +215,6 @@ async function runLatestCutoffsJob() {
     }
 
     const seasonCandidates = await getMainSeasonCandidatesSorted();
-    const results = [];
     let selectedSeason = null;
     let seasonAttemptIndex = 0;
     let aggregateRegionResults = [];
@@ -241,48 +261,6 @@ async function runLatestCutoffsJob() {
 
     if (!selectedSeason) {
       throw new Error('No available seasons with cutoffs found');
-    }
-    const getEnvBool = (keys, defaultVal = false) => {
-      for (const k of keys) {
-        if (Object.prototype.hasOwnProperty.call(process.env, k)) {
-          const v = String(process.env[k]).toLowerCase();
-          return v === 'true' || v === '1' || v === 'yes';
-        }
-      }
-      return defaultVal;
-    };
-    const getEnvNumber = (keys) => {
-      for (const k of keys) {
-        if (Object.prototype.hasOwnProperty.call(process.env, k)) {
-          const n = Number(process.env[k]);
-          if (Number.isFinite(n)) return n;
-        }
-      }
-      return NaN;
-    };
-    for (const region of REGIONS) {
-      try {
-        console.log(`[RIO-LATEST] Rebuilding cutoff for ${seasonSlug} ${region}`);
-        const resp = await rebuildCutoff(seasonSlug, region, {
-          strict: getEnvBool(['RIO_STRICT', 'BACKFILL_STRICT'], false),
-          max_pages: getEnvNumber(['RIO_MAX_PAGES', 'BACKFILL_MAX_PAGES']),
-          stall_pages: getEnvNumber(['RIO_STALL_PAGES', 'BACKFILL_STALL_PAGES']),
-          include_players: getEnvBool(['RIO_INCLUDE_PLAYERS', 'BACKFILL_INCLUDE_PLAYERS'], false),
-          dungeon_all: getEnvBool(['RIO_DUNGEON_ALL', 'BACKFILL_DUNGEON_ALL'], false),
-          overscan: getEnvBool(['RIO_OVERSCAN', 'BACKFILL_OVERSCAN'], false)
-        });
-        console.log(`[RIO-LATEST] ✓ ${seasonSlug} ${region} snapshot=${resp.snapshotId} qualifying=${resp.totalQualifying}`);
-        results.push({ region, status: 'success', snapshotId: resp.snapshotId, totalQualifying: resp.totalQualifying });
-        await sleep(500);
-      } catch (e) {
-        const status = e?.response?.status;
-        const msg = e?.response?.data || e.message;
-        console.warn(`[RIO-LATEST] ✗ ${seasonSlug} ${region} error:`, msg);
-        if (status === 404) {
-          console.warn(`[RIO-LATEST] Cutoffs not available for ${seasonSlug} ${region}`);
-        }
-        results.push({ region, status: 'error', error: typeof msg === 'string' ? msg : JSON.stringify(msg) });
-      }
     }
 
     const endTime = new Date();
