@@ -238,6 +238,37 @@ async function refreshViews() {
   }
 }
 
+// Pre-step: Populate reference data (seasons, dungeons, periods, realms)
+async function populateReferenceData() {
+  console.log('[DAILY] Populating reference data (seasons, dungeons, periods, realms)');
+  const results = {};
+  try {
+    const [seasonsRes, dungeonsRes, periodsRes, realmsRes] = await Promise.allSettled([
+      makeRequest('POST', '/admin/populate-seasons'),
+      makeRequest('POST', '/admin/populate-dungeons'),
+      makeRequest('POST', '/admin/populate-periods'),
+      makeRequest('POST', '/admin/populate-realms')
+    ]);
+
+    results.seasons = seasonsRes.status === 'fulfilled' ? seasonsRes.value : { status: 'ERROR', error: seasonsRes.reason?.message || String(seasonsRes.reason) };
+    results.dungeons = dungeonsRes.status === 'fulfilled' ? dungeonsRes.value : { status: 'ERROR', error: dungeonsRes.reason?.message || String(dungeonsRes.reason) };
+    results.periods = periodsRes.status === 'fulfilled' ? periodsRes.value : { status: 'ERROR', error: periodsRes.reason?.message || String(periodsRes.reason) };
+    results.realms = realmsRes.status === 'fulfilled' ? realmsRes.value : { status: 'ERROR', error: realmsRes.reason?.message || String(realmsRes.reason) };
+
+    console.log('[DAILY] Populate results:', {
+      seasons: results.seasons.status || 'OK',
+      dungeons: results.dungeons.status || 'OK',
+      periods: results.periods.status || 'OK',
+      realms: results.realms.status || 'OK'
+    });
+
+    return results;
+  } catch (error) {
+    console.error('[DAILY ERROR] Failed during populate reference data:', error.message);
+    throw error;
+  }
+}
+
 async function vacuumAnalyze() {
   console.log('[DAILY] Performing VACUUM ANALYZE on database');
   
@@ -267,6 +298,10 @@ async function runOneOffAutomation() {
         holder: lock.current
       };
     }
+    
+    // Step 0: Populate reference data
+    console.log('\n=== STEP 0: Populating reference data ===');
+    const populateResult = await populateReferenceData();
     
     // Step 1: Fetch leaderboard data for all regions
     console.log('\n=== STEP 1: Fetching leaderboard data ===');
@@ -304,6 +339,7 @@ async function runOneOffAutomation() {
       status: 'success',
       duration,
       results: {
+        populate: populateResult,
         fetch: fetchResult,
         import: importResult,
         clear: clearResult,
