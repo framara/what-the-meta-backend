@@ -9,9 +9,11 @@ const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const errorHandler = require('./middleware/error-handler');
 const rateLimit = require('./middleware/rate-limit');
-const { populateDungeons, populateSeasons, populatePeriods, populateRealms } = require('./routes/admin');
+const { populateDungeons, populateSeasons, populatePeriods, populateRealms, syncRaiderioStatic } = require('./routes/admin');
+const adminRouter = require('./routes/admin');
 const metaRoutes = require('./routes/meta');
 const aiRoutes = require('./routes/ai');
+const raiderIORoutes = require('./routes/raiderio');
 const { pool } = require('./services/db'); // <-- Import the pool
 const { backfillSeasonDungeonMappings } = require('./services/seasonBackfill');
 
@@ -76,6 +78,7 @@ app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 app.use('/meta', metaRoutes);
 app.use('/ai', aiRoutes);
+app.use('/raiderio', raiderIORoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -95,39 +98,41 @@ async function startServer() {
     console.log('✅ Connected to PostgreSQL DB');
     console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
 
-    // Determine flags for heavy startup tasks
+    // Single switch: populate all or nothing
     const isProd = (process.env.NODE_ENV || 'development') === 'production';
-    const autoPopulateDefault = isProd ? false : true;
-    const backfillDefault = isProd ? false : true;
-    const shouldAutoPopulate = parseEnvFlag(process.env.AUTO_POPULATE_ON_START, autoPopulateDefault);
-    const shouldBackfill = parseEnvFlag(process.env.SEASON_BACKFILL_ON_START, backfillDefault);
+    const shouldPopulate = parseEnvFlag(process.env.POPULATE_ON_START, !isProd);
 
-    if (shouldAutoPopulate) {
-      console.log('🔄 Starting parallel population of database tables...');
-      // Run all populate functions in parallel
-      const [dungeonsResult, seasonsResult, periodsResult, realmsResult] = await Promise.allSettled([
+    if (shouldPopulate) {
+      console.log('🔄 Populating data on start (all-or-nothing)...');
+      const [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult] = await Promise.allSettled([
         populateDungeons(),
         populateSeasons(),
         populatePeriods(),
-        populateRealms()
+        populateRealms(),
+        // Call directly instead of HTTP fetch to avoid startup dependency on network stack
+        syncRaiderioStatic('all'),
       ]);
 
       // Log results with status
-      console.log('📊 Population Results:');
+      console.log('📊 Population Results (all-or-nothing):');
       console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
       console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
       console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
       console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+      console.log('Raider.IO Static:', raiderioStaticResult.status === 'fulfilled' ? raiderioStaticResult.value : `ERROR: ${raiderioStaticResult.reason}`);
 
       // Check if any population failed
-      const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult]
+      const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult]
         .filter(result => result.status === 'rejected');
       
       if (failedPopulations.length > 0) {
-        console.warn(`⚠️ ${failedPopulations.length} population(s) failed, but continuing with server startup...`);
+        console.warn(`⚠️ ${failedPopulations.length} population(s) failed, continuing with server startup...`);
       }
+
+      console.log('🔁 Starting background season→dungeon backfill...');
+      backfillSeasonDungeonMappings(PORT);
     } else {
-      console.log('⏭️ Skipping DB population on start (AUTO_POPULATE_ON_START disabled)');
+      console.log('⏭️ Skipping DB population on start (POPULATE_ON_START disabled)');
     }
 
     app.listen(PORT, () => {
@@ -136,14 +141,7 @@ async function startServer() {
       console.log(`📚 Connected to DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
       console.log(``);
       console.log(`** SERVICE IS READY **`);
-
-      // Background backfill: season→dungeon mapping (clean service)
-      if (shouldBackfill) {
-        console.log('🔁 Starting background season→dungeon backfill...');
-        backfillSeasonDungeonMappings(PORT);
-      } else {
-        console.log('⏭️ Skipping background season→dungeon backfill (SEASON_BACKFILL_ON_START disabled)');
-      }
+      console.log(``);
     });
   } catch (err) {
     console.error('❌ Failed to connect to DB or populate data:', err);

@@ -86,4 +86,116 @@ module.exports = {
   pool,
   upsertLeaderboardRun,
   insertRunGroupMembers,
+  async upsertRaiderioDungeon(d) {
+    const q = `
+      INSERT INTO raiderio_dungeon (id, slug, name, short_name, expansion_id)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (id) DO UPDATE SET
+        slug = EXCLUDED.slug,
+        name = EXCLUDED.name,
+        short_name = EXCLUDED.short_name,
+        expansion_id = EXCLUDED.expansion_id
+    `;
+    await pool.query(q, [d.id, d.slug, d.name, d.short_name || null, d.expansion_id || null]);
+  },
+  async upsertRaiderioSeason(s) {
+    const q = `
+      INSERT INTO raiderio_season (slug, name, expansion_id, start_ts, end_ts)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (slug) DO UPDATE SET
+        name = EXCLUDED.name,
+        expansion_id = EXCLUDED.expansion_id,
+        start_ts = COALESCE(EXCLUDED.start_ts, raiderio_season.start_ts),
+        end_ts = COALESCE(EXCLUDED.end_ts, raiderio_season.end_ts)
+    `;
+    await pool.query(q, [s.slug, s.name || s.slug, s.expansion_id || null, s.start_ts || null, s.end_ts || null]);
+  },
+  async ensureRaiderioCutoffTables() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS raiderio_cutoff_snapshot (
+        id SERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        season_slug TEXT NOT NULL,
+        region TEXT NOT NULL,
+        cutoff_score NUMERIC,
+        target_count INTEGER,
+        total_qualifying INTEGER,
+        source_pages INTEGER,
+        dungeon_count INTEGER,
+        distribution JSONB
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS raiderio_cutoff_player (
+        snapshot_id INTEGER NOT NULL REFERENCES raiderio_cutoff_snapshot(id) ON DELETE CASCADE,
+        region TEXT NOT NULL,
+        realm_slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        class TEXT,
+        spec TEXT,
+        score NUMERIC,
+        UNIQUE(snapshot_id, region, realm_slug, name)
+      );
+    `);
+  },
+  async insertCutoffSnapshot({ season_slug, region, cutoff_score, target_count, total_qualifying, source_pages, dungeon_count, distribution }) {
+    const { rows } = await pool.query(
+      `INSERT INTO raiderio_cutoff_snapshot (season_slug, region, cutoff_score, target_count, total_qualifying, source_pages, dungeon_count, distribution)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       RETURNING id`,
+      [season_slug, region, cutoff_score ?? null, target_count ?? null, total_qualifying ?? null, source_pages ?? null, dungeon_count ?? null, distribution ? JSON.stringify(distribution) : null]
+    );
+    return rows[0].id;
+  },
+  async bulkInsertCutoffPlayers(snapshot_id, players) {
+    if (!players || players.length === 0) return { ok: true, inserted: 0 };
+    const values = [];
+    const placeholders = [];
+    let idx = 1;
+    for (const p of players) {
+      placeholders.push(`($${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++},$${idx++})`);
+      values.push(snapshot_id, p.region, p.realm_slug, p.name, p.class, p.spec, p.score);
+    }
+    await pool.query(
+      `INSERT INTO raiderio_cutoff_player (snapshot_id, region, realm_slug, name, class, spec, score)
+       VALUES ${placeholders.join(',')}
+       ON CONFLICT (snapshot_id, region, realm_slug, name) DO UPDATE SET
+         class = EXCLUDED.class,
+         spec = EXCLUDED.spec,
+         score = EXCLUDED.score`,
+      values
+    );
+    return { ok: true, inserted: players.length };
+  },
+  async getLatestCutoffSnapshot(season_slug, region) {
+    const { rows } = await pool.query(
+      `SELECT id, created_at, season_slug, region, cutoff_score, target_count, total_qualifying, source_pages, dungeon_count, distribution
+       FROM raiderio_cutoff_snapshot
+       WHERE season_slug = $1 AND region = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [season_slug, region]
+    );
+    return rows[0] || null;
+  },
+  async getLatestCutoffSnapshotsIndex() {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (season_slug, region)
+         season_slug, region, id, created_at, cutoff_score, target_count, total_qualifying
+       FROM raiderio_cutoff_snapshot
+       ORDER BY season_slug, region, created_at DESC`
+    );
+    return rows;
+  },
+  async getLatestCutoffSnapshotsBySeason(season_slug) {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (region)
+         season_slug, region, id, created_at, cutoff_score, target_count, total_qualifying, distribution
+       FROM raiderio_cutoff_snapshot
+       WHERE season_slug = $1
+       ORDER BY region, created_at DESC`,
+      [season_slug]
+    );
+    return rows;
+  }
 };
