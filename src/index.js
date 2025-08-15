@@ -30,6 +30,21 @@ function parseEnvFlag(value, defaultValue = false) {
 // Security middleware
 app.use(helmet());
 
+// Trust reverse proxy so req.ip, rate limiting, and secure cookies work behind Render/NGINX
+// Default: trust 1 hop in production, disabled in development unless overridden by env
+function parseTrustProxy(value) {
+  if (value === undefined || value === null || value === '') {
+    return (process.env.NODE_ENV || 'development') === 'production' ? 1 : false;
+  }
+  const v = String(value).trim();
+  const lower = v.toLowerCase();
+  if (/^\d+$/.test(v)) return parseInt(v, 10);
+  if (['true', 'yes', 'on'].includes(lower)) return true;
+  if (['false', 'no', 'off'].includes(lower)) return false;
+  return v; // e.g., 'loopback', '127.0.0.1'
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+
 // CORS configuration with specific origins
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 

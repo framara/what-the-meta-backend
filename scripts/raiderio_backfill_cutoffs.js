@@ -10,6 +10,7 @@
    BACKFILL_EXPANSIONS=10,9          // defaults to TWW(10) and DF(9)
    BACKFILL_REGIONS=us,eu,kr,tw      // defaults to all 4
    BACKFILL_MAIN_SEASONS_ONLY=true   // defaults true
+   BACKFILL_SEASONS=season-df-4,season-tww-3 // optional: process only these season slugs (overrides discovery)
    BACKFILL_CONCURRENCY=1            // sequential by default to avoid rate limits
 */
 
@@ -63,34 +64,40 @@ async function main() {
   const regions = parseCsvStrings(process.env.BACKFILL_REGIONS, ['us', 'eu', 'kr', 'tw']);
   const onlyMain = String(process.env.BACKFILL_MAIN_SEASONS_ONLY || 'true').toLowerCase() === 'true';
   const concurrency = Math.max(1, Number(process.env.BACKFILL_CONCURRENCY || 1));
+  const specifiedSeasons = parseCsvStrings(process.env.BACKFILL_SEASONS, []);
 
   console.log(`[BACKFILL] Starting. base=${API_BASE} expansions=${expansions.join(',')} regions=${regions.join(',')} onlyMain=${onlyMain} concurrency=${concurrency}`);
 
-  // 1) Gather season slugs from static-data
-  const seasonSlugs = new Set();
-  for (const expId of expansions) {
-    try {
-      const sd = await fetchStaticData(expId);
-      const seasons = Array.isArray(sd?.seasons) ? sd.seasons : [];
-      for (const s of seasons) {
-        if (!s?.slug) continue;
-        const slug = String(s.slug);
-        if (onlyMain) {
-          // Accept only canonical main seasons of the form: season-<expansion>-<number>
-          // Examples: season-df-4, season-sl-1, season-bfa-3
-          // Exclude variants like: season-tww-2-post
-          const isCanonicalMain = /^season-[a-z0-9]+-\d+$/i.test(slug);
-          if (!isCanonicalMain) continue;
+  // 1) Determine seasons to process: explicit override or discovered
+  let seasonList = [];
+  if (specifiedSeasons.length > 0) {
+    seasonList = specifiedSeasons;
+    console.log(`[BACKFILL] Using explicitly specified seasons (${seasonList.length}):`, seasonList);
+  } else {
+    const seasonSlugs = new Set();
+    for (const expId of expansions) {
+      try {
+        const sd = await fetchStaticData(expId);
+        const seasons = Array.isArray(sd?.seasons) ? sd.seasons : [];
+        for (const s of seasons) {
+          if (!s?.slug) continue;
+          const slug = String(s.slug);
+          if (onlyMain) {
+            // Accept only canonical main seasons of the form: season-<expansion>-<number>
+            // Examples: season-df-4, season-sl-1, season-bfa-3
+            // Exclude variants like: season-tww-2-post
+            const isCanonicalMain = /^season-[a-z0-9]+-\d+$/i.test(slug);
+            if (!isCanonicalMain) continue;
+          }
+          seasonSlugs.add(slug);
         }
-        seasonSlugs.add(slug);
+      } catch (e) {
+        console.warn(`[BACKFILL] Failed to load static-data for expansion ${expId}: ${e.message}`);
       }
-    } catch (e) {
-      console.warn(`[BACKFILL] Failed to load static-data for expansion ${expId}: ${e.message}`);
     }
+    seasonList = Array.from(seasonSlugs);
+    console.log(`[BACKFILL] Seasons selected (${seasonList.length}):`, seasonList);
   }
-
-  const seasonList = Array.from(seasonSlugs);
-  console.log(`[BACKFILL] Seasons selected (${seasonList.length}):`, seasonList);
 
   // 2) Iterate (season, region) pairs with simple concurrency control
   let active = 0;
