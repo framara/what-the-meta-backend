@@ -6,11 +6,19 @@ const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  max: 20,               // Increased pool size
-  min: 4,                // Minimum idle connections
-  idleTimeoutMillis: 60000,  // Close idle connections after 60s
-  connectionTimeoutMillis: 2000,  // Connection timeout
+  // Pool sizing and timeouts (env-overridable)
+  max: Number(process.env.PG_POOL_MAX ?? 20), // maximum clients in the pool
+  min: Number(process.env.PG_POOL_MIN ?? 4),  // minimum idle clients
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30000), // 30s
+  connectionTimeoutMillis: Number(process.env.PG_CONNECTION_TIMEOUT_MS ?? 10000), // 10s
+  keepAlive: true, // enable TCP keepalive to reduce idle disconnects
+  // SSL: prefer PGSSLMODE=require in production
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
+});
+
+// Prevent process crash on background/idle client errors
+pool.on('error', (err) => {
+  console.error('[pg] Unexpected error on idle client', err);
 });
 
 // Upsert leaderboard_run (no group_id)
