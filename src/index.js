@@ -106,64 +106,124 @@ app.use('*', (req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-async function startServer() {
-  try {
-    // Test DB connection before starting
-    await pool.query('SELECT 1');
-    console.log('✅ Connected to PostgreSQL DB');
-    console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
-
-    // Single switch: populate all or nothing
-    const isProd = (process.env.NODE_ENV || 'development') === 'production';
-    const shouldPopulate = parseEnvFlag(process.env.POPULATE_ON_START, !isProd);
-
-    if (shouldPopulate) {
-      console.log('🔄 Populating data on start (all-or-nothing)...');
-      const [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult] = await Promise.allSettled([
-        populateDungeons(),
-        populateSeasons(),
-        populatePeriods(),
-        populateRealms(),
-        // Call directly instead of HTTP fetch to avoid startup dependency on network stack
-        syncRaiderioStatic('all'),
-      ]);
-
-      // Log results with status
-      console.log('📊 Population Results (all-or-nothing):');
-      console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
-      console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
-      console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
-      console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
-      console.log('Raider.IO Static:', raiderioStaticResult.status === 'fulfilled' ? raiderioStaticResult.value : `ERROR: ${raiderioStaticResult.reason}`);
-
-      // Check if any population failed
-      const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult]
-        .filter(result => result.status === 'rejected');
-      
-      if (failedPopulations.length > 0) {
-        console.warn(`⚠️ ${failedPopulations.length} population(s) failed, continuing with server startup...`);
+// Background DB readiness monitor with retry/backoff
+async function waitForDbReady(maxWaitMs = 10 * 60 * 1000) { // 10 minutes cap
+  const start = Date.now();
+  let delay = 1000; // 1s initial
+  while (true) {
+    try {
+      await pool.query('SELECT 1');
+      return true;
+    } catch (err) {
+      const code = err?.code;
+      const msg = err?.message || '';
+      const elapsed = Date.now() - start;
+      // Known transient states: DB not accepting connections yet, or connection reset
+      const transient = code === '57P03' || /not.*accepting.*connections/i.test(msg) || /terminated unexpectedly/i.test(msg) || /ECONNREFUSED|ECONNRESET|ETIMEDOUT/.test(msg);
+      if (!transient) {
+        console.warn('[DB] Non-transient error during readiness check:', code, msg);
       }
-
-      console.log('🔁 Starting background season→dungeon backfill...');
-      backfillSeasonDungeonMappings(PORT);
-    } else {
-      console.log('⏭️ Skipping DB population on start (POPULATE_ON_START disabled)');
+      if (elapsed >= maxWaitMs) {
+        console.warn(`[DB] Readiness wait exceeded ${(maxWaitMs/1000)|0}s. Continuing without DB ready.`);
+        return false;
+      }
+      await new Promise(r => setTimeout(r, delay));
+      delay = Math.min(Math.floor(delay * 1.5), 15000); // cap at 15s
     }
-
-    app.listen(PORT, () => {
-      console.log(`🚀 WoW API Proxy server running on port ${PORT}`);
-      console.log(`❤️ Healthcheck: http://localhost:${PORT}/health`);
-      console.log(`📚 Connected to DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
-      console.log(``);
-      console.log(`** SERVICE IS READY **`);
-      console.log(``);
-    });
-  } catch (err) {
-    console.error('❌ Failed to connect to DB or populate data:', err);
-    process.exit(1);
   }
 }
 
-startServer();
+async function initAfterDbReady() {
+  const isProd = (process.env.NODE_ENV || 'development') === 'production';
+  const shouldPopulate = parseEnvFlag(process.env.POPULATE_ON_START, !isProd);
+
+  const ready = await waitForDbReady();
+  if (ready) {
+    console.log('✅ Connected to PostgreSQL DB');
+    console.log(`📚 Database: ${process.env.PGDATABASE} on ${process.env.PGHOST}`);
+
+    if (shouldPopulate) {
+      try {
+        console.log('🔄 Populating data on start...');
+        const [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult] = await Promise.allSettled([
+          populateDungeons(),
+          populateSeasons(),
+          populatePeriods(),
+          populateRealms(),
+          syncRaiderioStatic('all'),
+        ]);
+
+        console.log('📊 Population Results:');
+        console.log('Dungeons:', dungeonsResult.status === 'fulfilled' ? dungeonsResult.value : `ERROR: ${dungeonsResult.reason}`);
+        console.log('Seasons:', seasonsResult.status === 'fulfilled' ? seasonsResult.value : `ERROR: ${seasonsResult.reason}`);
+        console.log('Periods:', periodsResult.status === 'fulfilled' ? periodsResult.value : `ERROR: ${periodsResult.reason}`);
+        console.log('Realms:', realmsResult.status === 'fulfilled' ? realmsResult.value : `ERROR: ${realmsResult.reason}`);
+        console.log('Raider.IO Static:', raiderioStaticResult.status === 'fulfilled' ? raiderioStaticResult.value : `ERROR: ${raiderioStaticResult.reason}`);
+
+        const failedPopulations = [dungeonsResult, seasonsResult, periodsResult, realmsResult, raiderioStaticResult]
+          .filter(result => result.status === 'rejected');
+        if (failedPopulations.length > 0) {
+          console.warn(`⚠️ ${failedPopulations.length} population(s) failed, continuing...`);
+        }
+      } catch (e) {
+        console.warn('⚠️ Population step failed:', e?.message || e);
+      }
+
+      try {
+        console.log('🔁 Starting background season→dungeon backfill...');
+        backfillSeasonDungeonMappings(PORT);
+      } catch (e) {
+        console.warn('⚠️ Failed to start background backfill:', e?.message || e);
+      }
+
+    } else {
+      console.log('⏭️ Skipping DB population on start (POPULATE_ON_START disabled)');
+    }
+  } else {
+    // Not ready in time: keep probing in background until success, then run backfill once
+    console.warn('[DB] Not ready after initial wait. Will keep probing every 10s in background.');
+    const timer = setInterval(async () => {
+      try {
+        await pool.query('SELECT 1');
+        clearInterval(timer);
+        console.log('✅ DB became ready later. Starting background backfill...');
+        try { backfillSeasonDungeonMappings(PORT); } catch (_) {}
+      } catch (_) {
+        // keep waiting
+      }
+    }, 10000);
+  }
+}
+
+// Start HTTP server immediately to avoid platform healthcheck timeouts
+app.listen(PORT, () => {
+  console.log(`🚀 WoW API Proxy server running on port ${PORT}`);
+  console.log(`❤️ Healthcheck: http://localhost:${PORT}/health`);
+  console.log(`📚 Target DB: ${process.env.PGHOST}/${process.env.PGDATABASE}`);
+  console.log(``);
+  console.log(`** SERVICE IS STARTING **`);
+  console.log(``);
+});
+
+// Initialize DB-dependent tasks in the background
+initAfterDbReady();
+
+// Guard against crash loops on transient PG errors
+process.on('unhandledRejection', (reason) => {
+  const msg = (reason && reason.message) || String(reason);
+  if (/terminated unexpectedly|ECONNRESET|ECONNREFUSED|ETIMEDOUT/.test(msg)) {
+    console.warn('[unhandledRejection]', msg);
+  } else {
+    console.error('[unhandledRejection]', reason);
+  }
+});
+process.on('uncaughtException', (err) => {
+  const msg = err?.message || '';
+  if (/terminated unexpectedly|ECONNRESET|ECONNREFUSED|ETIMEDOUT/.test(msg)) {
+    console.warn('[uncaughtException]', msg);
+  } else {
+    console.error('[uncaughtException]', err);
+  }
+});
 
 module.exports = app;

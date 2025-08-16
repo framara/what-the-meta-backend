@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Load local environment vars if present
+try { require('dotenv').config(); } catch (_) {}
+
 const axios = require('axios');
 
 // Configuration for Render DAILY Job
@@ -69,6 +72,24 @@ async function acquireJobLock(ttlSeconds = undefined) {
     const data = err.response?.data;
     if (data && data.status === 'LOCKED') {
       console.log(`[DAILY] Job lock is held by owner ${data.current?.owner} until ${data.current?.expires_at}`);
+      // Optionally try to steal once if configured and past grace
+      const allowSteal = String(process.env.JOB_LOCK_STEAL || 'false').toLowerCase() === 'true';
+      const stealGraceMs = Number(process.env.JOB_LOCK_STEAL_GRACE_MS || 0);
+      const now = Date.now();
+      const exp = data.current?.expires_at ? Date.parse(data.current.expires_at) : 0;
+      if (allowSteal && (exp > 0 && now + stealGraceMs >= exp)) {
+        console.log('[DAILY] Attempting to steal stuck job lock...');
+        try {
+          const body = { lock_name: LOCK_NAME, owner: getLockOwner(), job: 'daily', steal: true };
+          if (ttlSeconds) body.ttl_seconds = ttlSeconds;
+          const resp2 = await makeRequest('POST', '/admin/job-lock/acquire', body, 1);
+          console.log('[DAILY] Stole job lock');
+          HAS_LOCK = true;
+          return { acquired: true, lock: resp2.lock || resp2 };
+        } catch (_) {
+          // Fall through
+        }
+      }
       return { acquired: false, current: data.current };
     }
     throw err;
@@ -185,23 +206,52 @@ async function fetchLeaderboardData() {
 // Step 2: Import all leaderboard JSON files
 async function importLeaderboardData() {
   console.log('[DAILY] Starting import of leaderboard JSON files');
-  
-  try {
-    const response = await makeRequest('POST', '/admin/import-all-leaderboard-json-fast');
-    console.log('[DAILY] Successfully imported leaderboard data');
-    return response;
-  } catch (error) {
-    const status = error?.response?.status;
-    const errData = error?.response?.data;
-    const errMsg = errData?.error || error.message;
-    // Treat missing/empty output directory as a no-op instead of a hard failure
-    if (status === 404 && (errMsg?.includes('Output directory not found') || errMsg?.includes('No JSON files found'))) {
-      console.warn('[DAILY] No files to import (output directory missing or empty). Skipping import.');
-      return { status: 'OK', totalRuns: 0, totalMembers: 0, results: [], note: 'No files to import' };
+
+  // Loop in smaller batches to avoid upstream 502s/timeouts
+  // Tune within safe defaults; delete processed files to avoid reprocessing
+  const qs = (params) => {
+    const esc = encodeURIComponent;
+    return Object.keys(params).map(k => `${esc(k)}=${esc(String(params[k]))}`).join('&');
+  };
+  const batchSize = Number(process.env.IMPORT_BATCH_SIZE || 40);
+  const maxBatchesPerRequest = Number(process.env.IMPORT_MAX_BATCHES || 2);
+  const concurrency = Number(process.env.IMPORT_CONCURRENCY || 6);
+  const deleteProcessed = String(process.env.IMPORT_DELETE || 'true');
+
+  let grandTotalRuns = 0;
+  let grandTotalMembers = 0;
+  let totalProcessedFiles = 0;
+  let remaining = null;
+  let batches = 0;
+
+  while (true) {
+    const query = qs({ batch_size: batchSize, max_batches: maxBatchesPerRequest, concurrency, delete_processed: deleteProcessed });
+    try {
+      const resp = await makeRequest('POST', `/admin/import-all-leaderboard-json-fast?${query}`);
+      grandTotalRuns += resp.totalRuns || 0;
+      grandTotalMembers += resp.totalMembers || 0;
+      totalProcessedFiles += resp.processedFilesCount || 0;
+      remaining = typeof resp.remainingFiles === 'number' ? resp.remainingFiles : null;
+      batches += resp.batchesProcessed || 0;
+
+      console.log(`[DAILY] Import progress: batches=${batches}, processed_files=${totalProcessedFiles}, remaining=${remaining}, runs=${grandTotalRuns}, members=${grandTotalMembers}`);
+
+      if (!remaining || remaining <= 0) break;
+    } catch (error) {
+      const status = error?.response?.status;
+      const errData = error?.response?.data;
+      const errMsg = errData?.error || error.message;
+      if (status === 404 && (errMsg?.includes('Output directory not found') || errMsg?.includes('No JSON files found'))) {
+        console.warn('[DAILY] No files to import (output directory missing or empty). Skipping import.');
+        break;
+      }
+      console.error('[DAILY ERROR] Failed to import leaderboard data:', errMsg);
+      throw error;
     }
-    console.error('[DAILY ERROR] Failed to import leaderboard data:', errMsg);
-    throw error;
   }
+
+  console.log(`[DAILY] Successfully imported leaderboard data. Total runs=${grandTotalRuns}, members=${grandTotalMembers}`);
+  return { status: 'OK', totalRuns: grandTotalRuns, totalMembers: grandTotalMembers, processedFiles: totalProcessedFiles };
 }
 
 // Step 3: Clear output directory
@@ -305,8 +355,9 @@ async function runOneOffAutomation() {
   console.log(`[DAILY] API Base URL: ${API_BASE_URL}`);
   
   try {
-    // Acquire global job lock (default TTL handled by server)
-    const lock = await acquireJobLock();
+    // Acquire global job lock (allow shorter TTL via env)
+    const ttl = Number(process.env.JOB_LOCK_TTL_SECONDS || 0) || undefined;
+    const lock = await acquireJobLock(ttl);
     if (!lock.acquired) {
       return {
         status: 'skipped',

@@ -895,47 +895,51 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
     if (!fs.existsSync(outputDir)) {
       return res.status(404).json({ status: 'NOT OK', error: 'Output directory not found' });
     }
-    const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.json'));
+    // Gather and sort files for deterministic batching
+    let files = fs.readdirSync(outputDir).filter(f => f.endsWith('.json')).sort();
     if (files.length === 0) {
       return res.status(404).json({ status: 'NOT OK', error: 'No JSON files found in output directory' });
     }
 
-    console.log(`[IMPORT ALL FAST] Starting optimized bulk import for ${files.length} files...`);
+    // Query-tunable knobs to keep requests under provider timeouts
+    const BATCH_SIZE = Math.max(1, Math.min(parseInt(req.query.batch_size, 10) || 50, 500));
+    const MAX_BATCHES = Math.max(1, Math.min(parseInt(req.query.max_batches, 10) || Math.ceil(files.length / BATCH_SIZE), 1000));
+    const CONCURRENT_TASKS = Math.max(1, Math.min(parseInt(req.query.concurrency, 10) || 6, 16));
+    const DELETE_PROCESSED = String(req.query.delete_processed || 'false').toLowerCase() === 'true';
+
+    console.log(`[IMPORT ALL FAST] Starting optimized import for ${files.length} files (batch_size=${BATCH_SIZE}, max_batches=${MAX_BATCHES}, concurrency=${CONCURRENT_TASKS}, delete_processed=${DELETE_PROCESSED})`);
+
     let totalRuns = 0;
     let totalMembers = 0;
     let results = [];
+    let batchesProcessed = 0;
+    let processedFilesCount = 0;
 
-    // Use a single connection pool with higher limits
     const pool = db.pool;
-    const BATCH_SIZE = 50; // Process 50 files per batch
-    const CONCURRENT_TASKS = 8; // Increased from 4 to 8 for better throughput
     const limit = pLimit(CONCURRENT_TASKS);
 
-    let completed = 0;
-    const totalFiles = files.length;
+    // We will process up to MAX_BATCHES batches in this single HTTP request
+    while (files.length > 0 && batchesProcessed < MAX_BATCHES) {
+      const batchFiles = files.slice(0, BATCH_SIZE);
+      const totalFilesThisRequest = Math.min(files.length, BATCH_SIZE * MAX_BATCHES);
+      console.log(`[IMPORT ALL FAST] Processing batch ${batchesProcessed + 1}/${Math.ceil(totalFilesThisRequest / BATCH_SIZE)} (files: ${batchFiles.length})`);
 
-    // Process files in batches
-    for (let i = 0; i < files.length; i += BATCH_SIZE) {
-      const batchFiles = files.slice(i, i + BATCH_SIZE);
-      console.log(`[IMPORT ALL FAST] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(files.length/BATCH_SIZE)}`);
-
-      // Create a single temporary CSV for the entire batch
-      const batchRunsCsvPath = path.join(os.tmpdir(), `batch-runs-${Date.now()}.csv`);
-      const batchMembersCsvPath = path.join(os.tmpdir(), `batch-members-${Date.now()}.csv`);
+      // Create batch CSVs
+      const batchRunsCsvPath = path.join(os.tmpdir(), `batch-runs-${Date.now()}-${Math.random().toString(36).slice(2)}.csv`);
+      const batchMembersCsvPath = path.join(os.tmpdir(), `batch-members-${Date.now()}-${Math.random().toString(36).slice(2)}.csv`);
       const batchRunsCsv = fs.createWriteStream(batchRunsCsvPath);
       const batchMembersCsv = fs.createWriteStream(batchMembersCsvPath);
 
-      // Process each file in the batch concurrently
+      // Build CSVs concurrently from files
+      let completed = 0;
+      const totalFilesInBatch = batchFiles.length;
       const batchTasks = batchFiles.map(filename => limit(async () => {
         const filePath = path.join(outputDir, filename);
         let fileRuns = 0;
         let fileMembers = 0;
-
         try {
           const runs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
           fileRuns = runs.length;
-
-          // Write runs to the batch CSV
           for (const run of runs) {
             batchRunsCsv.write([
               run.region,
@@ -951,10 +955,8 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
               run.run_guid
             ].map(x => x === undefined ? '' : x).join(',') + '\n');
 
-            // Write members to the batch CSV
             if (run.members && run.members.length > 0) {
               for (const m of run.members) {
-                // Use 'unknown' for null or empty character names
                 const characterName = (!m.character_name || m.character_name.trim() === '') ? 'unknown' : m.character_name;
                 batchMembersCsv.write([
                   run.run_guid,
@@ -967,36 +969,29 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
               }
             }
           }
-
           completed++;
-          printFileImportProgress(completed, totalFiles);
+          printFileImportProgress(completed, totalFilesInBatch);
           return { filename, runs: fileRuns, members: fileMembers };
-
         } catch (err) {
           console.error(`[IMPORT ALL FAST ERROR] File: ${filename}`, err);
           return { filename, error: err.message };
         }
       }));
 
-      // Wait for all files in the batch to be processed
       const batchResults = await Promise.allSettled(batchTasks);
-      
-      // Close the CSV streams
+
+      // Close CSV streams and wait for IO drain
       batchRunsCsv.end();
       batchMembersCsv.end();
-
-      // Wait for CSV files to be fully written
       await Promise.all([
         new Promise(resolve => batchRunsCsv.on('finish', resolve)),
         new Promise(resolve => batchMembersCsv.on('finish', resolve))
       ]);
 
-      // Now process the entire batch in a single transaction
+      // Copy into temp tables and merge in a single transaction
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-
-        // Create temporary tables for this batch
         await client.query(`
           CREATE TEMP TABLE temp_leaderboard_runs (
             region VARCHAR(8),
@@ -1012,7 +1007,6 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
             run_guid UUID
           ) ON COMMIT DROP;
         `);
-
         await client.query(`
           CREATE TEMP TABLE temp_run_group_members (
             run_guid UUID,
@@ -1023,7 +1017,6 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
           ) ON COMMIT DROP;
         `);
 
-        // Bulk copy the batch data
         await Promise.all([
           new Promise((resolve, reject) => {
             const stream = client.query(copyFrom('COPY temp_leaderboard_runs FROM STDIN WITH (FORMAT csv)'));
@@ -1037,7 +1030,6 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
           })
         ]);
 
-        // Insert runs from temp table using a more efficient query
         await client.query(`
           INSERT INTO leaderboard_run (region, season_id, period_id, dungeon_id, realm_id, completed_at, duration_ms, keystone_level, score, rank, run_guid)
           SELECT DISTINCT ON (dungeon_id, period_id, season_id, region, completed_at, duration_ms, keystone_level, score)
@@ -1050,7 +1042,6 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
             realm_id = EXCLUDED.realm_id;
         `);
 
-        // Insert members with better deduplication
         await client.query(`
           INSERT INTO run_group_member (run_guid, character_name, class_id, spec_id, role)
           SELECT DISTINCT ON (run_guid, character_name) 
@@ -1066,7 +1057,7 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Update totals and results
+        // Update totals and per-file results
         for (const result of batchResults) {
           if (result.status === 'fulfilled' && result.value && (result.value.runs || result.value.members)) {
             totalRuns += result.value.runs || 0;
@@ -1079,14 +1070,20 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
           }
         }
 
+        // Optionally remove processed files after successful commit
+        if (DELETE_PROCESSED) {
+          for (const fname of batchFiles) {
+            const fp = path.join(outputDir, fname);
+            try { fs.unlinkSync(fp); } catch (e) { console.warn(`[IMPORT ALL FAST] Failed to delete ${fname}: ${e.message}`); }
+          }
+        }
+
       } catch (err) {
         await client.query('ROLLBACK');
         console.error(`[IMPORT ALL FAST ERROR] Batch processing error:`, err);
         throw err;
       } finally {
         client.release();
-
-        // Clean up batch CSV files
         try {
           fs.unlinkSync(batchRunsCsvPath);
           fs.unlinkSync(batchMembersCsvPath);
@@ -1094,10 +1091,16 @@ router.post('/import-all-leaderboard-json-fast', async (req, res) => {
           console.warn(`[IMPORT ALL FAST] Warning: Could not delete temporary files:`, err.message);
         }
       }
+
+      // Advance window for next batch within this request
+      files = files.slice(BATCH_SIZE);
+      processedFilesCount += batchFiles.length;
+      batchesProcessed += 1;
     }
 
-    console.log(`[IMPORT ALL FAST] Bulk import complete. Total runs: ${totalRuns}, total members: ${totalMembers}`);
-    res.json({ status: 'OK', totalRuns, totalMembers, results });
+    const remainingFiles = files.length;
+    console.log(`[IMPORT ALL FAST] Request complete. Batches processed: ${batchesProcessed}, files processed: ${processedFilesCount}, remaining: ${remainingFiles}. Totals so far -> runs: ${totalRuns}, members: ${totalMembers}`);
+    res.json({ status: 'OK', totalRuns, totalMembers, results, batchesProcessed, processedFilesCount, remainingFiles });
 
   } catch (error) {
     console.error('[IMPORT ALL FAST ERROR]', error);
@@ -1408,7 +1411,7 @@ async function ensureJobLockTable(client) {
 // POST /admin/job-lock/acquire
 // Body: { lock_name: string, owner: string, ttl_seconds?: number, job?: string }
 router.post('/job-lock/acquire', async (req, res) => {
-  const { lock_name, owner, ttl_seconds = 21600, job = null } = req.body || {};
+  const { lock_name, owner, ttl_seconds = 21600, job = null, steal = false } = req.body || {};
   if (!lock_name || !owner) {
     return res.status(400).json({ status: 'NOT OK', error: 'lock_name and owner are required' });
   }
@@ -1428,10 +1431,10 @@ router.post('/job-lock/acquire', async (req, res) => {
         job = EXCLUDED.job,
         acquired_at = NOW(),
         expires_at = NOW() + ($4 || ' seconds')::INTERVAL
-      WHERE job_lock.expires_at < NOW()
+      WHERE job_lock.expires_at < NOW() OR $5::boolean IS TRUE
       RETURNING lock_name, owner, job, acquired_at, expires_at;
       `,
-      [lock_name, owner, job, ttl_seconds.toString()]
+      [lock_name, owner, job, ttl_seconds.toString(), !!steal]
     );
 
     if (result.rowCount === 0) {
@@ -1465,6 +1468,32 @@ router.post('/job-lock/release', async (req, res) => {
     return res.json({ status: 'OK', released: true });
   } catch (error) {
     return res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// POST /admin/job-lock/force-release
+// Body: { lock_name: string }
+// Admin override: delete a lock by name regardless of owner/expiry
+router.post('/job-lock/force-release', async (req, res) => {
+  const { lock_name } = req.body || {};
+  if (!lock_name) {
+    return res.status(400).json({ status: 'NOT OK', error: 'lock_name is required' });
+  }
+  try {
+    const result = await db.pool.query('DELETE FROM job_lock WHERE lock_name = $1', [lock_name]);
+    return res.json({ status: 'OK', deleted: result.rowCount });
+  } catch (error) {
+    return res.status(500).json({ status: 'NOT OK', error: error.message });
+  }
+});
+
+// GET /admin/job-lock/list - list all current locks
+router.get('/job-lock/list', async (_req, res) => {
+  try {
+    const { rows } = await db.pool.query('SELECT lock_name, owner, job, acquired_at, expires_at FROM job_lock ORDER BY lock_name');
+    res.json({ status: 'OK', locks: rows });
+  } catch (error) {
+    res.status(500).json({ status: 'NOT OK', error: error.message });
   }
 });
 
