@@ -2,7 +2,8 @@ name: Raider.IO Latest Cutoffs Automation
 
 on:
   schedule:
-    # Run every 4 hours (6 times per day) at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+  # Run every 4 hours (6 times per day) at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+  # Daily workflow runs at 02,06,10,14,18,22 to avoid overlap.
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
