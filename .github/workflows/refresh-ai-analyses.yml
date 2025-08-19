@@ -1,0 +1,39 @@
+name: Refresh AI Analyses (8h)
+
+on:
+  schedule:
+    # Every 8 hours
+    - cron: '0 */8 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      API_ADMIN_TOKEN: ${{ secrets.API_ADMIN_TOKEN }}
+    steps:
+      - name: Check API_BASE_URL is set
+        run: |
+          if [ -z "$API_BASE_URL" ]; then echo "API_BASE_URL secret is required"; exit 1; fi
+
+      - name: Get latest season id
+        id: season
+        run: |
+          SEASON_ID=$(curl -sS "$API_BASE_URL/wow/advanced/seasons" | jq -r '.[-1].season_id')
+          if [ "$SEASON_ID" = "null" ] || [ -z "$SEASON_ID" ]; then echo "Failed to resolve season id"; exit 1; fi
+          echo "season_id=$SEASON_ID" >> $GITHUB_OUTPUT
+
+      - name: Force refresh meta health
+        run: |
+          curl -sS -X POST "$API_BASE_URL/ai/meta-health" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $API_ADMIN_TOKEN" \
+            -d "{\"seasonId\": ${{ steps.season.outputs.season_id }}, \"forceRefresh\": true}" | jq -r '.metaSummary.overallState // .status // .error'
+
+      - name: Force refresh predictions
+        run: |
+          curl -sS -X POST "$API_BASE_URL/ai/predictions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $API_ADMIN_TOKEN" \
+            -d "{\"seasonId\": ${{ steps.season.outputs.season_id }}}" | jq -r '._cache // .status // .error'

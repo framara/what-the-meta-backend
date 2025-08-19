@@ -69,7 +69,7 @@ function validateMetaHealthResponse(resp) {
 router.post('/predictions', async (req, res) => {
   console.log(`🤖 [AI] POST /ai/predictions - Season: ${req.body.seasonId || 'unknown'}`);
   try {
-    const { seasonId } = req.body;
+    const { seasonId, forceRefresh } = req.body;
 
     if (!seasonId) {
       return res.status(400).json({ error: 'Missing required data: seasonId' });
@@ -82,10 +82,10 @@ router.post('/predictions', async (req, res) => {
       [seasonId, 'predictions']
     );
 
-    if (cachedResult.rows.length > 0) {
+    if (cachedResult.rows.length > 0 && !forceRefresh) {
       const cached = cachedResult.rows[0];
       const cacheAge = Date.now() - new Date(cached.created_at).getTime();
-      const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+      const maxAge = 8 * 60 * 60 * 1000; // 8 hours
       
       if (cacheAge < maxAge) {
         console.log(`📋 [AI] Using cached analysis for season ${seasonId}`);
@@ -102,11 +102,13 @@ router.post('/predictions', async (req, res) => {
           _cache: {
             created_at: cached.created_at,
             age_hours: Math.round(cacheAge / (1000 * 60 * 60)),
-            max_age_hours: 24
+            max_age_hours: 8
           }
         };
         return res.json(responseWithCache);
       }
+    } else if (forceRefresh) {
+      console.log(`🔄 [AI] Force refresh requested for predictions season ${seasonId}, bypassing cache`);
     }
 
     // If no cache or expired, generate new analysis
@@ -708,7 +710,7 @@ router.post('/meta-health', async (req, res) => {
 
     if (cachedResult.rows.length > 0 && !forceRefresh) {
       const cacheAge = Date.now() - new Date(cachedResult.rows[0].created_at).getTime();
-      const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+      const maxAge = 8 * 60 * 60 * 1000; // 8 hours
       
       console.log(`📋 [AI] Found cached data for season ${seasonId}, age: ${Math.round(cacheAge / (1000 * 60 * 60))} hours`);
       
@@ -1412,9 +1414,9 @@ router.get('/analysis/:season_id', async (req, res) => {
            analysisData = cached.analysis_data;
          }
          
-         // Check if cache is still valid (less than 24 hours old)
+         // Check if cache is still valid (less than 8 hours old)
          const cacheAge = Date.now() - new Date(cached.created_at).getTime();
-         const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+         const maxAge = 8 * 60 * 60 * 1000; // 8 hours
          
                    if (cacheAge < maxAge) {
             // Include cache metadata in the response
@@ -1423,7 +1425,7 @@ router.get('/analysis/:season_id', async (req, res) => {
               _cache: {
                 created_at: cached.created_at,
                 age_hours: Math.round(cacheAge / (1000 * 60 * 60)),
-                max_age_hours: 24
+                max_age_hours: 8
               }
             };
             return res.json(responseWithCache);
@@ -1473,7 +1475,7 @@ router.post('/affix-insights', async (req, res) => {
     // Cache key per season+period
     const analysisType = `affix_insights_${periodId}${dungeonId ? `_d${dungeonId}` : ''}`;
 
-    // Check cache (24h)
+    // Check cache (8h)
     const cached = await db.pool.query(
       'SELECT analysis_data, created_at FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2 ORDER BY created_at DESC LIMIT 1',
       [seasonId, analysisType]
@@ -1481,9 +1483,9 @@ router.post('/affix-insights', async (req, res) => {
     if (cached.rows.length > 0) {
       const row = cached.rows[0];
       const ageMs = Date.now() - new Date(row.created_at).getTime();
-      if (ageMs < 24 * 60 * 60 * 1000) {
+        if (ageMs < 8 * 60 * 60 * 1000) {
         const data = typeof row.analysis_data === 'string' ? JSON.parse(row.analysis_data) : row.analysis_data;
-        return res.json({ ...data, _cache: { created_at: row.created_at, age_hours: Math.round(ageMs / 3600000), max_age_hours: 24 } });
+          return res.json({ ...data, _cache: { created_at: row.created_at, age_hours: Math.round(ageMs / 3600000), max_age_hours: 8 } });
       }
     }
 
