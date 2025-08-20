@@ -10,6 +10,28 @@ const router = express.Router();
 function isNumberArray(a) { return Array.isArray(a) && a.every(n => typeof n === 'number' && Number.isFinite(n)); }
 function isStringArray(a) { return Array.isArray(a) && a.every(s => typeof s === 'string'); }
 
+// Minimal, safe logging for axios errors (avoid dumping headers)
+function logAxiosError(prefix, error) {
+  const status = error?.response?.status;
+  const msg = error?.message;
+  const apiMsg = error?.response?.data?.error?.message || error?.response?.data?.error;
+  if (status) {
+    console.error(`${prefix} ${status}: ${apiMsg || msg}`);
+  } else if (error?.code === 'ECONNABORTED') {
+    console.error(`${prefix} timeout: ${msg}`);
+  } else {
+    console.error(`${prefix} ${msg || 'Unknown error'}`);
+  }
+}
+
+// Configurable performance caps (env overrides)
+const AI_MAX_PERIODS = Number(process.env.AI_MAX_PERIODS) > 0 ? Number(process.env.AI_MAX_PERIODS) : 18;
+const AI_MAX_KEYS_PER_PERIOD = Number(process.env.AI_MAX_KEYS_PER_PERIOD) > 0 ? Number(process.env.AI_MAX_KEYS_PER_PERIOD) : 1000;
+const AI_MAX_TOKENS_PREDICTIONS = Number(process.env.AI_MAX_TOKENS_PREDICTIONS) > 0 ? Number(process.env.AI_MAX_TOKENS_PREDICTIONS) : 12000;
+const AI_MAX_TOKENS_META = Number(process.env.AI_MAX_TOKENS_META) > 0 ? Number(process.env.AI_MAX_TOKENS_META) : 12000;
+const AI_MAX_TOKENS_TIER = Number(process.env.AI_MAX_TOKENS_TIER) > 0 ? Number(process.env.AI_MAX_TOKENS_TIER) : 20000;
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS) > 0 ? Number(process.env.OPENAI_TIMEOUT_MS) : 210000;
+
 function validatePredictionsResponse(resp) {
   const errors = [];
   if (!resp || typeof resp !== 'object') errors.push('response not an object');
@@ -34,6 +56,34 @@ function validatePredictionsResponse(resp) {
       });
       if (errors.length > 20) break; // avoid noise
     }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function validateTierListResponse(resp) {
+  const errors = [];
+  if (!resp || typeof resp !== 'object') errors.push('response not an object');
+  const tiers = resp.tiers;
+  if (!tiers || typeof tiers !== 'object') errors.push('tiers missing or not an object');
+  const allowedTiers = ['S', 'A', 'B', 'C', 'D'];
+  if (tiers && typeof tiers === 'object') {
+    const seen = new Set();
+    allowedTiers.forEach(t => {
+      const arr = tiers[t] || [];
+      if (!Array.isArray(arr)) errors.push(`tiers.${t} must be array`);
+      arr.slice(0, 20).forEach((e, i) => {
+        if (typeof e !== 'object') { errors.push(`tiers.${t}[${i}] must be object`); return; }
+        if (typeof e.specId !== 'number') errors.push(`tiers.${t}[${i}].specId must be number`);
+        if (typeof e.specName !== 'string') errors.push(`tiers.${t}[${i}].specName must be string`);
+        if (typeof e.className !== 'string') errors.push(`tiers.${t}[${i}].className must be string`);
+        if (typeof e.role !== 'string') errors.push(`tiers.${t}[${i}].role must be string`);
+        if (typeof e.usage !== 'number') errors.push(`tiers.${t}[${i}].usage must be number`);
+        if (typeof e.specId === 'number') {
+          if (seen.has(e.specId)) errors.push(`duplicate specId ${e.specId} across tiers`);
+          seen.add(e.specId);
+        }
+      });
+    });
   }
   return { ok: errors.length === 0, errors };
 }
@@ -152,7 +202,7 @@ router.post('/predictions', async (req, res) => {
     const specTemporalData = {};
     
     // Limit processing to avoid memory issues with very large datasets
-  const maxPeriodsToProcess = Math.min(seasonData.total_periods, 18); // Limit to 18 periods max (token-friendly)
+  const maxPeriodsToProcess = Math.min(seasonData.total_periods, AI_MAX_PERIODS);
     const periodsToProcess = seasonData.periods.slice(-maxPeriodsToProcess); // Use the last 25 periods
     
     // Processing periods for AI analysis
@@ -167,7 +217,7 @@ router.post('/predictions', async (req, res) => {
       const avgLevelForPeriod = periodKeys.length > 0 ? totalLevel / periodKeys.length : 0;
       
       // Limit keys processed per period to avoid memory issues
-      const maxKeysPerPeriod = 1000;
+  const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
       const keysToProcess = periodKeys.slice(0, maxKeysPerPeriod);
       
       keysToProcess.forEach((run) => {
@@ -270,7 +320,7 @@ router.post('/predictions', async (req, res) => {
 
     // Decide token parameter key based on model family
     const isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
-    const maxTokensPredictions = 10000; // 10k
+    const maxTokensPredictions = AI_MAX_TOKENS_PREDICTIONS;
 
     // Helper to build prompt payloads with correct token param
     const buildPrompts = (useCompletionTokensParam, opts = {}) => {
@@ -401,14 +451,14 @@ IMPORTANT:
   let removedTemperature = false;
   let removedSeed = false;
     
-    while (retryCount <= maxRetries) {
+  while (retryCount <= maxRetries) {
       try {
         openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt, {
           headers: {
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 90000 // 90 second timeout
+      timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 210000 // configurable, default 210s
         });
         break; // Success, exit retry loop
       } catch (error) {
@@ -647,10 +697,11 @@ IMPORTANT:
     res.json(analysisResult);
 
   } catch (error) {
-    console.error('[AI PREDICTIONS ERROR]', error);
+    logAxiosError('[AI PREDICTIONS ERROR]', error);
     
     if (error.response) {
-      console.error('OpenAI API Error:', error.response.status, error.response.data);
+  // Minimal OpenAI API error logging without leaking headers/keys
+  console.error('OpenAI API Error:', error.response.status, error.response.data?.error || 'Unknown error');
       
       // Handle model-specific errors
       if (error.response.data?.error?.code === 'model_not_found') {
@@ -730,7 +781,7 @@ router.post('/meta-health', async (req, res) => {
     console.log(`📊 [AI] Processing data for meta health analysis...`);
     
     // Limit processing to avoid memory and token issues
-  const maxPeriodsToProcess = Math.min(compositionData.total_periods, 18);
+  const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
     const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess);
     
     // Process composition data for meta health analysis
@@ -764,8 +815,8 @@ router.post('/meta-health', async (req, res) => {
       const avgLevelForPeriod = periodKeys.length > 0 ? totalLevel / periodKeys.length : 0;
       
       // Limit keys processed per period to avoid memory issues
-      const maxKeysPerPeriod = 1000;
-      const keysToProcess = periodKeys.slice(0, maxKeysPerPeriod);
+  const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
+  const keysToProcess = periodKeys.slice(0, maxKeysPerPeriod);
       
       const periodStats = {
         period: periodIndex + 1,
@@ -1139,7 +1190,7 @@ IMPORTANT:
 
     // Decide token parameter key based on model family
     const isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
-    const maxTokensMetaHealth = 10000; // 10k
+  const maxTokensMetaHealth = AI_MAX_TOKENS_META;
 
     // Helper to build prompt payloads with correct token param
     const buildPrompts = (useCompletionTokensParam, opts = {}) => {
@@ -1181,7 +1232,7 @@ IMPORTANT:
             'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          timeout: 90000
+          timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 210000
         });
         break; // Success, exit retry loop
       } catch (error) {
@@ -1367,7 +1418,7 @@ IMPORTANT:
     res.json(parsedResponse);
 
   } catch (error) {
-    console.error('Meta health analysis error:', error);
+    logAxiosError('Meta health analysis error:', error);
     
     if (error.response?.status === 429) {
       return res.status(429).json({ error: 'OpenAI rate limit exceeded. Please try again later.' });
@@ -1413,6 +1464,20 @@ router.get('/analysis/:season_id', async (req, res) => {
          } else {
            analysisData = cached.analysis_data;
          }
+
+         // Special case: empty tier_list should be treated as invalid cache
+         if (analysisType === 'tier_list') {
+           const tiers = analysisData?.tiers || {};
+           const totalEntries = ['S','A','B','C','D'].reduce((acc, k) => acc + ((tiers[k] || []).length || 0), 0);
+           if (!Number.isFinite(totalEntries) || totalEntries === 0) {
+             console.warn(`⚠️ [AI] Empty tier_list cache detected for season ${season_id}; clearing and returning 404.`);
+             await db.pool.query(
+               'DELETE FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2',
+               [season_id, analysisType]
+             );
+             return res.status(404).json({ error: `No cached analysis available for type '${analysisType}'. Please use POST /ai/tier-list to generate new analysis.` });
+           }
+         }
          
          // Check if cache is still valid (less than 8 hours old)
          const cacheAge = Date.now() - new Date(cached.created_at).getTime();
@@ -1441,7 +1506,11 @@ router.get('/analysis/:season_id', async (req, res) => {
     }
 
   // If no cache or expired, do not auto-trigger generation; instruct the client explicitly per type
-  const generateHint = analysisType === 'meta_health' ? 'POST /ai/meta-health' : 'POST /ai/predictions';
+  const generateHint = analysisType === 'meta_health'
+    ? 'POST /ai/meta-health'
+    : analysisType === 'tier_list'
+      ? 'POST /ai/tier-list'
+      : 'POST /ai/predictions';
   res.status(404).json({ error: `No cached analysis available for type '${analysisType}'. Please use ${generateHint} to generate new analysis.` });
 
   } catch (error) {
@@ -1549,9 +1618,414 @@ router.post('/affix-insights', async (req, res) => {
 
     return res.json(response);
   } catch (err) {
-    console.error('[AI AFFIX INSIGHTS ERROR]', err);
+  logAxiosError('[AI AFFIX INSIGHTS ERROR]', err);
     return res.status(500).json({ error: 'Failed to generate affix insights' });
   }
 });
+
+// POST /ai/tier-list
+// Purpose: AI-powered S–D tier list for specs in the season (tiers only)
+router.post('/tier-list', async (req, res) => {
+  try {
+    const { seasonId, forceRefresh } = req.body || {};
+    if (!seasonId) return res.status(400).json({ error: 'Missing required data: seasonId' });
+
+    // Cache check (8h TTL)
+    const analysisType = 'tier_list';
+    const cached = await db.pool.query(
+      'SELECT analysis_data, created_at FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2 ORDER BY created_at DESC LIMIT 1',
+      [seasonId, analysisType]
+    );
+    if (cached.rows.length > 0 && !forceRefresh) {
+      const row = cached.rows[0];
+      const ageMs = Date.now() - new Date(row.created_at).getTime();
+      const maxAge = 8 * 60 * 60 * 1000;
+      if (ageMs < maxAge) {
+        const data = typeof row.analysis_data === 'string' ? JSON.parse(row.analysis_data) : row.analysis_data;
+        return res.json({ ...data, _cache: { created_at: row.created_at, age_hours: Math.round(ageMs/3600000), max_age_hours: 8 } });
+      }
+    }
+
+    // Fetch data needed for prompt
+    const compositionData = await getCompositionDataForSeason(seasonId);
+    const specEvolution = await getSpecEvolutionForSeason(seasonId);
+    if (!compositionData || !specEvolution) {
+      return res.status(404).json({ error: 'No data available for this season' });
+    }
+
+    // Build compact usage snapshot per spec similar to meta health usage calc
+  const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
+  const recentPeriods = compositionData.periods.slice(-maxPeriodsToProcess);
+  // Use only non-empty periods to compute usage
+  const periodsToProcess = recentPeriods.filter(p => Array.isArray(p.keys) && p.keys.length > 0);
+    const roleTotals = { tank: 0, healer: 0, dps: 0 };
+    const roleSpec = { tank: {}, healer: {}, dps: {} };
+    // New: collect per-spec distribution by keystone level and by bracket for AI context
+    const specLevelCounters = {}; // specId -> { byLevel: { [level]: count }, top: number }
+    // Use concise brackets to keep token size low while giving AI high-key signal
+    const levelBrackets = [
+      { label: '10-14', min: 10, max: 14 },
+      { label: '15-19', min: 15, max: 19 },
+      { label: '20-24', min: 20, max: 24 },
+      { label: '25-27', min: 25, max: 27 },
+      { label: '28+', min: 28, max: Infinity }
+    ];
+    const specBracketCounters = {}; // specId -> { [label]: count }
+  periodsToProcess.forEach((period) => {
+  const keys = (period.keys || []).slice(0, AI_MAX_KEYS_PER_PERIOD);
+    keys.forEach((run) => {
+        const countedSpecs = new Set();
+        const countedRoles = new Set();
+        (run.members || []).forEach((m) => {
+          const specId = m.spec_id;
+          const role = WOW_SPEC_ROLES[specId] || 'dps';
+          if (!roleSpec[role][specId]) roleSpec[role][specId] = { appearances: 0 };
+          if (!countedSpecs.has(specId)) { roleSpec[role][specId].appearances++; countedSpecs.add(specId); }
+          if (!countedRoles.has(role)) { roleTotals[role]++; countedRoles.add(role); }
+
+      // Level counters per spec
+      const lvl = Number(run.keystone_level) || 0;
+      if (!specLevelCounters[specId]) specLevelCounters[specId] = { byLevel: {}, top: 0, levels: [] };
+      specLevelCounters[specId].byLevel[lvl] = (specLevelCounters[specId].byLevel[lvl] || 0) + 1;
+      if (lvl > specLevelCounters[specId].top) specLevelCounters[specId].top = lvl;
+      specLevelCounters[specId].levels.push(lvl);
+      if (!specBracketCounters[specId]) specBracketCounters[specId] = {};
+      const bucket = levelBrackets.find(b => lvl >= b.min && lvl <= b.max) || levelBrackets[0];
+      specBracketCounters[specId][bucket.label] = (specBracketCounters[specId][bucket.label] || 0) + 1;
+        });
+      });
+    });
+    // Compute usage% per spec (DPS divided by 3 spots)
+    const usageBySpec = {};
+    Object.keys(roleSpec).forEach((role) => {
+      const totals = roleTotals[role] || 0;
+      Object.entries(roleSpec[role]).forEach(([sid, val]) => {
+        const appearances = val.appearances || 0;
+        let usage = totals > 0 ? (appearances / totals) * 100 : 0;
+        if (role === 'dps') {
+          const totalDpsSpots = totals * 3; // approximate, roleTotals already per-run role count
+          usage = totalDpsSpots > 0 ? (appearances / totalDpsSpots) * 100 : 0;
+        }
+        usageBySpec[sid] = Math.round(usage * 100) / 100;
+      });
+    });
+
+    // New: create compact distribution features per spec
+    const levelDistributionBySpec = {}; // specId -> { byBracketPct: {label: pct}, topLevel: n, medianLevel: n, appearances: n }
+    Object.entries(specLevelCounters).forEach(([sid, obj]) => {
+      const total = Object.values(obj.byLevel).reduce((a, b) => a + b, 0);
+      const appearances = total;
+      const countsByBracket = {};
+      levelBrackets.forEach(b => { countsByBracket[b.label] = 0; });
+      const sbc = specBracketCounters[sid] || {};
+      Object.entries(sbc).forEach(([label, count]) => { countsByBracket[label] = (countsByBracket[label] || 0) + count; });
+      const byBracketPct = {};
+      levelBrackets.forEach(b => {
+        const c = countsByBracket[b.label] || 0;
+        byBracketPct[b.label] = total > 0 ? Math.round((c / total) * 1000) / 10 : 0; // one decimal
+      });
+      // median level
+      const lvls = obj.levels ? obj.levels.slice().sort((a,b) => a-b) : [];
+      let median = 0;
+      if (lvls.length > 0) {
+        const mid = Math.floor(lvls.length / 2);
+        median = lvls.length % 2 ? lvls[mid] : (lvls[mid - 1] + lvls[mid]) / 2;
+      }
+      levelDistributionBySpec[sid] = {
+        byBracketPct,
+        topLevel: obj.top || 0,
+        medianLevel: Math.round(median * 10) / 10,
+        appearances
+      };
+    });
+
+    // Role-normalized usage: compare usage to per-role expected share so DPS aren't penalized for having more specs
+    const roleSpecCounts = { tank: 0, healer: 0, dps: 0 };
+    WOW_SPECIALIZATIONS.forEach(s => { const r = WOW_SPEC_ROLES[s.id] || 'dps'; if (roleSpecCounts[r] !== undefined) roleSpecCounts[r]++; });
+    const expectedShareByRole = {
+      tank: roleSpecCounts.tank > 0 ? 100 / roleSpecCounts.tank : 0,       // one tank spot
+      healer: roleSpecCounts.healer > 0 ? 100 / roleSpecCounts.healer : 0, // one healer spot
+      dps: roleSpecCounts.dps > 0 ? (100 * 3) / (roleSpecCounts.dps * 3) : 0 // percent of all DPS spots per spec = 100/numDps
+    };
+    const roleNormalizedUsageBySpec = {}; // usage / expectedShare(role)
+    Object.entries(usageBySpec).forEach(([sid, u]) => {
+      const specIdNum = Number(sid);
+      const role = WOW_SPEC_ROLES[specIdNum] || 'dps';
+      const expected = expectedShareByRole[role] || 0;
+      const ratio = expected > 0 ? (Number(u) / expected) : 0;
+      roleNormalizedUsageBySpec[sid] = Math.round(ratio * 1000) / 1000; // keep 3 decimals
+    });
+
+    // If there's no recent runs data, do not synthesize from evolution; surface as an error
+    const noRunsData = periodsToProcess.length === 0 || (roleTotals.tank + roleTotals.healer + roleTotals.dps) === 0;
+    const evoSlice = (specEvolution.evolution || []).slice(-maxPeriodsToProcess);
+    if (noRunsData) {
+      return res.status(409).json({ error: 'Insufficient recent runs data to build tier list', periodsConsidered: periodsToProcess.length, evolutionPoints: evoSlice.length });
+    }
+
+  // Limit evolution window and include last few periods spec_counts for trend hints
+  // (evoSlice computed above)
+
+  let openAIModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  let isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
+  const maxTokens = AI_MAX_TOKENS_TIER;
+  const AI_DEBUG = String(process.env.AI_DEBUG || 'true').toLowerCase() === 'true';
+  const systemPrompt = `You are an expert World of Warcraft Mythic+ analyst. Build a spec tier list (S–D) for the current season.
+
+RULES:
+- Consider role context: tanks and healers each have 1 spot, DPS have 3 per group.
+- Fairness across roles: compare specs using role-normalized usage = usage / expectedShareForRole. This removes the bias that tanks/healers (fewer specs) naturally have higher usage than DPS (many specs). Use this normalized ratio as your primary usage signal.
+- Base strength on BOTH role-normalized usage and key level distribution. Specs with higher representation at higher key levels (20+, 25+, 28+) should be favored even if overall raw usage is lower. Use evolution counts only as secondary trend hints.
+- When two specs have similar usage, prefer the spec with a greater share in higher brackets (20-24, 25-27, 28+). Use a reasonable mental weighting like: score ≈ usage * (1 + 0.35*share20_24 + 0.7*share25_27 + 1.0*share28plus) where shares are fractions (0-1). You may deviate if distributions strongly suggest otherwise.
+- Keep S-tier small and meaningful; do not exceed 5 specs across all roles in S.
+- Avoid duplicates; each spec appears in exactly one tier.
+- Prefer higher usage and improving trends for higher tiers; very low usage goes to C/D.
+OUTPUT: JSON only with { "tiers": { "S": SpecEntry[], "A": SpecEntry[], "B": SpecEntry[], "C": SpecEntry[], "D": SpecEntry[] } }.
+Use EXACT uppercase keys: "S","A","B","C","D"; include all keys even if empty.
+SpecEntry fields: { specId, specName, className, role, usage }.`;
+
+    const specRef = WOW_SPECIALIZATIONS.reduce((acc, s) => { acc[s.id] = { name: s.name, classId: s.classId }; return acc; }, {});
+    const classRef = WOW_CLASSES.reduce((acc, c) => { acc[c.id] = c.name; return acc; }, {});
+    const roleRef = WOW_SPEC_ROLES;
+
+    const payloadData = {
+      seasonId,
+      usageBySpec,
+      expectedShareByRole,
+      roleNormalizedUsageBySpec,
+      levelBracketDefs: levelBrackets,
+      levelDistributionBySpec,
+      evolution: evoSlice.map(e => ({ period_id: e.period_id, spec_counts: e.spec_counts })),
+      specRef,
+      classRef,
+      roleRef
+    };
+
+    const buildPrompts = (useCompletionTokensParam, opts = {}) => {
+      // recompute in case model changed
+      isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
+      const { includeTemperature = !isGpt5Family, includeSeed = true } = opts;
+      const tokenParam = useCompletionTokensParam ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens };
+      const base = {
+        model: openAIModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Build a Mythic+ spec tier list using this data. Respond with JSON only.\n${JSON.stringify(payloadData)}` }
+        ],
+        ...(includeTemperature ? { temperature: 0.2 } : {}),
+        ...(includeSeed ? { seed: 42 } : {}),
+        ...tokenParam
+      };
+      return { base, withJson: { ...base, response_format: { type: 'json_object' } } };
+    };
+
+  let includeTemperature = !isGpt5Family;
+    let includeSeed = true;
+    let { base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(isGpt5Family, { includeTemperature, includeSeed });
+    let openAIResponse;
+    let retryCount = 0;
+    const maxRetries = 3;
+    let triedWithoutJsonFormat = false;
+    let swappedTokenParamOnce = false;
+    let removedTemperature = false;
+    let removedSeed = false;
+    let timeoutMs = Number(process.env.OPENAI_TIMEOUT_MS) || 210000; // 210s default, configurable
+
+  let switchedModel = false; // deprecated: no model fallback
+  while (retryCount <= maxRetries) {
+      try {
+        const promptPayload = triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt;
+        if (AI_DEBUG) {
+          const usingCompletionParam = 'max_completion_tokens' in promptPayload;
+          const tokenCap = usingCompletionParam ? promptPayload.max_completion_tokens : promptPayload.max_tokens;
+          const rf = !!promptPayload.response_format;
+          console.log(`🤖 [AI] tier-list request: model=${openAIModel} timeoutMs=${timeoutMs} tokenKey=${usingCompletionParam ? 'max_completion_tokens' : 'max_tokens'} cap=${tokenCap} response_format=${rf} includeTemperature=${!!promptPayload.temperature} includeSeed=${'seed' in promptPayload}`);
+        }
+        const t0 = Date.now();
+        openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', promptPayload, {
+          headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+          timeout: timeoutMs
+        });
+        if (AI_DEBUG) {
+          console.log(`⏱️ [AI] tier-list latency=${Date.now()-t0}ms`);
+        }
+        break;
+      } catch (error) {
+        const isTimeout = (error.code === 'ECONNABORTED' || error.message?.toLowerCase().includes('timeout'));
+        // Retry on timeout/abort with backoff and increased timeout
+        if (isTimeout && retryCount < maxRetries) {
+          retryCount++;
+          timeoutMs = Math.min(timeoutMs + 30000, 180000); // bump by 30s up to 180s
+          const delay = Math.round(Math.pow(2, retryCount) * 500 * (1 + Math.random() * 0.25));
+          console.warn(`🤖 [AI] OpenAI request timed out, retrying in ${Math.round(delay/1000)}s with timeout ${Math.round(timeoutMs/1000)}s (attempt ${retryCount}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        const errMsg = (error.response?.data?.error?.message || '').toLowerCase();
+        if (error.response?.status === 400 && !triedWithoutJsonFormat && errMsg.includes('response_format')) { triedWithoutJsonFormat = true; continue; }
+        if (error.response?.status === 400 && !swappedTokenParamOnce && (errMsg.includes('max_tokens') || errMsg.includes('max_completion_tokens') || errMsg.includes('unsupported parameter'))) {
+          swappedTokenParamOnce = true;
+          const currentlyUsingCompletion = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+          ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts(!currentlyUsingCompletion, { includeTemperature, includeSeed }));
+          continue;
+        }
+        if (error.response?.status === 400 && !removedTemperature && errMsg.includes('temperature')) { removedTemperature = true; includeTemperature = false; ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature, includeSeed })); continue; }
+        if (error.response?.status === 400 && !removedSeed && errMsg.includes('seed')) { removedSeed = true; includeSeed = false; ({ base: openAIPromptBase, withJson: openAIPrompt } = buildPrompts('max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt), { includeTemperature, includeSeed })); continue; }
+        if (error.response?.status === 429 && retryCount < maxRetries) { retryCount++; let delay = Math.pow(2, retryCount) * 1000; delay = Math.round(delay * (1 + Math.random()*0.25)); await new Promise(r => setTimeout(r, delay)); continue; }
+        throw error;
+      }
+    }
+
+    const aiMessage = openAIResponse.data.choices?.[0];
+    const aiRaw = aiMessage?.message?.content || '';
+    const finishReason = aiMessage?.finish_reason;
+    const usage = openAIResponse.data.usage || {};
+    if (finishReason) {
+      console.log(`🤖 [AI] tier-list finish_reason=${finishReason} prompt_tokens=${usage.prompt_tokens || 'n/a'} completion_tokens=${usage.completion_tokens || 'n/a'}`);
+    }
+    if (AI_DEBUG) {
+      console.log(`📦 [AI] tier-list raw_length=${aiRaw.length} chars (showing preview)`);
+      console.log((aiRaw || '').slice(0, 800));
+    }
+    const tryParse = (raw) => {
+      try { return JSON.parse(raw); } catch (e1) {
+        const code = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/); if (code) { try { return JSON.parse(code[1]); } catch {}};
+        const any = raw.match(/\{[\s\S]*\}/); if (any) { try { return JSON.parse(any[0]); } catch {}};
+        return undefined; }
+    };
+    let parsed = tryParse(aiRaw);
+    if (!parsed || finishReason === 'length') {
+      const useCompletionTokensParam = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
+      const tokenParam = useCompletionTokensParam ? { max_completion_tokens: Math.min(maxTokens*2, 16000) } : { max_tokens: Math.min(maxTokens*2, 16000) };
+      const reformat = { model: openAIModel, messages: [ { role: 'system', content: 'You will be given your previous output which is intended to be JSON. Convert it into strictly valid JSON that matches the requested schema. Respond with JSON only.' }, { role: 'user', content: aiRaw || 'null' } ], ...tokenParam, response_format: { type: 'json_object' } };
+      try {
+        const rf = await axios.post('https://api.openai.com/v1/chat/completions', reformat, { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 60000 });
+        const rfRaw = rf.data.choices?.[0]?.message?.content || '';
+        parsed = tryParse(rfRaw);
+      } catch {}
+    }
+    if (!parsed) return res.status(500).json({ error: 'Failed to parse AI response' });
+
+    // Normalize and enrich spec entries with canonical names and classes
+    const tiers = parsed.tiers || {};
+    if (AI_DEBUG) {
+      const rawTierKeys = Object.keys(tiers || {});
+      console.log(`🧩 [AI] parsed keys=${Object.keys(parsed)} tier_keys_raw=${JSON.stringify(rawTierKeys)}`);
+    }
+    const normTiers = { S: [], A: [], B: [], C: [], D: [] };
+    const normalizeTierKey = (key) => {
+      if (typeof key !== 'string') return null;
+      let k = key.trim();
+      // remove suffix like " tier", "-tier", "_tier"
+      k = k.replace(/\s*[-_\s]*tier$/i, '');
+      // take first character and uppercase
+      const ch = k.charAt(0).toUpperCase();
+      return ['S','A','B','C','D'].includes(ch) ? ch : null;
+    };
+    const unknownTierKeys = [];
+    const pushNorm = (tierKey, entry) => {
+      const specId = Number(entry.specId);
+      const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
+      const className = spec ? (WOW_CLASSES.find(c => c.id === spec.classId)?.name || 'Unknown') : (entry.className || 'Unknown');
+      const role = WOW_SPEC_ROLES[specId] || entry.role || 'dps';
+      const usage = typeof entry.usage === 'number' ? entry.usage : Number(usageBySpec[specId] || 0);
+      normTiers[tierKey].push({
+        specId,
+        specName: spec?.name || entry.specName || `Spec ${specId}`,
+        className,
+        role,
+  usage
+      });
+    };
+    Object.entries(tiers).forEach(([k, arr]) => {
+      const nk = normalizeTierKey(k);
+      if (!nk || !Array.isArray(arr)) { unknownTierKeys.push(k); return; }
+      arr.forEach(e => pushNorm(nk, e));
+    });
+    if (AI_DEBUG) {
+      const counts = Object.fromEntries(['S','A','B','C','D'].map(k => [k, normTiers[k].length]));
+      console.log(`📊 [AI] normalized tier counts=${JSON.stringify(counts)} unknown_keys_ignored=${JSON.stringify(unknownTierKeys)}`);
+    }
+
+    const result = { tiers: normTiers };
+
+    // Validate + sanity check: require non-empty tiers overall
+    const validation = validateTierListResponse(result);
+    const totalEntries = ['S','A','B','C','D'].reduce((acc, k) => acc + (result.tiers[k]?.length || 0), 0);
+    if (!validation.ok || totalEntries === 0) {
+      console.warn('⚠️ [AI] Tier-list validation failed or empty result; attempting strict retry');
+      const strictSystem = `${systemPrompt}\n- CRITICAL: Assign every viable spec to exactly one tier; do not leave tiers empty. Aim for 20-26 total entries.`;
+      const mk = (useCompletionTokensParam) => {
+        const strictCap = Math.min(AI_MAX_TOKENS_TIER * 2, 16000);
+        const tokenParam = useCompletionTokensParam ? { max_completion_tokens: strictCap } : { max_tokens: strictCap };
+        return {
+          model: openAIModel,
+          messages: [
+            { role: 'system', content: strictSystem },
+            { role: 'user', content: `Build a Mythic+ spec tier list using this data. Respond with JSON only.\n${JSON.stringify(payloadData)}` }
+          ],
+          temperature: 0.1,
+          seed: 42,
+          ...tokenParam,
+          response_format: { type: 'json_object' }
+        };
+      };
+      try {
+        const strictPayload = mk(true);
+        if (AI_DEBUG) {
+          console.log(`🤖 [AI] strict retry: model=${openAIModel} tokenKey=max_completion_tokens cap=${strictPayload.max_completion_tokens} timeout=${OPENAI_TIMEOUT_MS}`);
+        }
+        const t1 = Date.now();
+        const strictResp = await axios.post('https://api.openai.com/v1/chat/completions', strictPayload, { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, timeout: OPENAI_TIMEOUT_MS });
+        if (AI_DEBUG) console.log(`⏱️ [AI] strict latency=${Date.now()-t1}ms`);
+        const strictRaw = strictResp.data.choices?.[0]?.message?.content || '';
+        const strictFinish = strictResp.data.choices?.[0]?.finish_reason;
+        const strictUsage = strictResp.data.usage || {};
+        if (strictFinish) console.log(`🤖 [AI] strict finish_reason=${strictFinish} prompt_tokens=${strictUsage.prompt_tokens || 'n/a'} completion_tokens=${strictUsage.completion_tokens || 'n/a'} raw_length=${strictRaw.length}`);
+        const tryParse2 = (raw) => { try { return JSON.parse(raw); } catch { const m = raw.match(/\{[\s\S]*\}/); try { return m ? JSON.parse(m[0]) : undefined; } catch { return undefined; } } };
+        const strictParsed = tryParse2(strictRaw) || {};
+        const strictTiers = strictParsed.tiers || {};
+  const strictNorm = { S: [], A: [], B: [], C: [], D: [] };
+        Object.entries(strictTiers).forEach(([k, arr]) => {
+          const nk = normalizeTierKey(k);
+          if (!nk || !Array.isArray(arr)) return;
+          arr.forEach(e => pushNorm(nk, e));
+        });
+        const strictResult = { tiers: strictNorm };
+        const totalStrict = ['S','A','B','C','D'].reduce((acc, k) => acc + (strictResult.tiers[k]?.length || 0), 0);
+        const v2 = validateTierListResponse(strictResult);
+        if (AI_DEBUG) {
+          const counts2 = Object.fromEntries(['S','A','B','C','D'].map(k => [k, strictResult.tiers[k].length]));
+          console.log(`📊 [AI] strict normalized counts=${JSON.stringify(counts2)} validation_ok=${v2.ok} total=${totalStrict}${v2.ok ? '' : ` errors=${JSON.stringify(v2.errors?.slice(0,10) || [])}`}`);
+        }
+        if (!v2.ok || totalStrict === 0) {
+          console.warn('⚠️ [AI] Strict retry still invalid/empty. Returning error (no fallback).');
+          const counts2 = Object.fromEntries(['S','A','B','C','D'].map(k => [k, strictResult.tiers[k].length]));
+          return res.status(502).json({ error: 'AI tier list invalid after strict retry', details: v2.errors?.slice(0,10) || [], counts: counts2 });
+        } else {
+          Object.assign(result, strictResult);
+        }
+      } catch (reErr) {
+        console.warn('⚠️ [AI] Strict retry errored. Returning error (no fallback).');
+        return res.status(502).json({ error: 'AI tier list strict retry failed', message: reErr?.message || 'unknown error' });
+      }
+    }
+
+    // Cache
+    try {
+      await db.pool.query('DELETE FROM ai_analysis WHERE season_id = $1 AND analysis_type = $2', [seasonId, analysisType]);
+      await db.pool.query(
+        'INSERT INTO ai_analysis (season_id, analysis_data, analysis_type, confidence_score, data_quality) VALUES ($1, $2, $3, $4, $5)',
+        [seasonId, JSON.stringify(result), analysisType, 85, 'ai_generated']
+      );
+    } catch (e) { console.warn('Tier list cache write failed:', e.message); }
+
+    return res.json(result);
+  } catch (err) {
+    logAxiosError('[AI TIER LIST ERROR]', err);
+  return res.status(500).json({ error: 'Failed to generate tier list' });
+  }
+});
+// baseline builder removed to avoid non-AI fallbacks
 
 module.exports = router; 

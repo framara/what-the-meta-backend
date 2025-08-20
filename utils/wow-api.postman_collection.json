@@ -16,7 +16,8 @@
     { "key": "specializationId", "value": "577" },
     { "key": "dungeonId", "value": "247" },
     { "key": "periodId", "value": "1001" },
-    { "key": "seasonId", "value": "15" },
+  { "key": "seasonId", "value": "15" },
+  { "key": "aiType", "value": "tier_list", "description": "Type for GET /ai/analysis: predictions | meta_health | tier_list" },
     { "key": "filename", "value": "eu-s14-p1001-d247.json" },
     { "key": "adminApiKey", "value": "your_secure_admin_api_key_here", "description": "Admin API key for protected routes" }
   ],
@@ -24,6 +25,71 @@
     {
       "name": "Health",
       "request": { "method": "GET", "url": "{{baseUrl}}/health" }
+    },
+    {
+      "name": "AI",
+      "item": [
+        {
+          "name": "Predictions (POST - generate)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seasonId\": {{seasonId}},\n  \"forceRefresh\": true\n}"
+            },
+            "url": "{{baseUrl}}/ai/predictions",
+            "description": "Generate predictions. Uses server-side OpenAI call. Cached for 8h unless forceRefresh=true."
+          }
+        },
+        {
+          "name": "Meta Health (POST - generate)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seasonId\": {{seasonId}},\n  \"forceRefresh\": true\n}"
+            },
+            "url": "{{baseUrl}}/ai/meta-health",
+            "description": "Analyze meta health. Uses server-side OpenAI call. Cached for 8h unless forceRefresh=true."
+          }
+        },
+        {
+          "name": "Affix Insights (POST - per period)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seasonId\": {{seasonId}},\n  \"periodId\": {{periodId}}\n}"
+            },
+            "url": "{{baseUrl}}/ai/affix-insights",
+            "description": "Insights based on week-over-week usage deltas. Cached per (seasonId, periodId)."
+          }
+        },
+        {
+          "name": "Tier List (POST - generate)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seasonId\": {{seasonId}},\n  \"forceRefresh\": true\n}"
+            },
+            "url": "{{baseUrl}}/ai/tier-list",
+            "description": "Generate tiers-only spec tier list (S–D). No synthetic fallback; returns errors if invalid or insufficient data."
+          }
+        },
+        {
+          "name": "AI Analysis (GET cache)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/ai/analysis/{{seasonId}}?type={{aiType}}",
+            "description": "Fetch cached AI analysis by type: predictions | meta_health | tier_list. Returns 404 if none or invalid cache."
+          }
+        }
+      ]
     },
     {
       "name": "Game Data",

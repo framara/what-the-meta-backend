@@ -37,3 +37,10 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $API_ADMIN_TOKEN" \
             -d "{\"seasonId\": ${{ steps.season.outputs.season_id }}}" | jq -r '._cache // .status // .error'
+
+      - name: Force refresh tier list
+        run: |
+          curl -sS -X POST "$API_BASE_URL/ai/tier-list" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $API_ADMIN_TOKEN" \
+            -d "{\"seasonId\": ${{ steps.season.outputs.season_id }}, \"forceRefresh\": true}" | jq -r '.summary // .status // .error'
