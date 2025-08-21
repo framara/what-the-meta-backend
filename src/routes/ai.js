@@ -1660,17 +1660,11 @@ router.post('/tier-list', async (req, res) => {
   const periodsToProcess = recentPeriods.filter(p => Array.isArray(p.keys) && p.keys.length > 0);
     const roleTotals = { tank: 0, healer: 0, dps: 0 };
     const roleSpec = { tank: {}, healer: {}, dps: {} };
-    // New: collect per-spec distribution by keystone level and by bracket for AI context
-    const specLevelCounters = {}; // specId -> { byLevel: { [level]: count }, top: number }
-    // Use concise brackets to keep token size low while giving AI high-key signal
-    const levelBrackets = [
-      { label: '10-14', min: 10, max: 14 },
-      { label: '15-19', min: 15, max: 19 },
-      { label: '20-24', min: 20, max: 24 },
-      { label: '25-27', min: 25, max: 27 },
-      { label: '28+', min: 28, max: Infinity }
-    ];
-    const specBracketCounters = {}; // specId -> { [label]: count }
+  // New: collect per-spec distribution by keystone level; build dynamic brackets later
+  const specLevelCounters = {}; // specId -> { byLevel: { [level]: count }, top: number, levels: number[] }
+  let levelBrackets = []; // dynamic percentiles (e.g., P40–P60, P60–P80, P80–P90, P90+)
+  const specBracketCounters = {}; // specId -> { [label]: count }
+  const allLevels = []; // collect all levels to compute percentiles
   periodsToProcess.forEach((period) => {
   const keys = (period.keys || []).slice(0, AI_MAX_KEYS_PER_PERIOD);
     keys.forEach((run) => {
@@ -1683,16 +1677,67 @@ router.post('/tier-list', async (req, res) => {
           if (!countedSpecs.has(specId)) { roleSpec[role][specId].appearances++; countedSpecs.add(specId); }
           if (!countedRoles.has(role)) { roleTotals[role]++; countedRoles.add(role); }
 
-      // Level counters per spec
+      // Level counters per spec (defer bracket counting until dynamic brackets are derived)
       const lvl = Number(run.keystone_level) || 0;
       if (!specLevelCounters[specId]) specLevelCounters[specId] = { byLevel: {}, top: 0, levels: [] };
       specLevelCounters[specId].byLevel[lvl] = (specLevelCounters[specId].byLevel[lvl] || 0) + 1;
       if (lvl > specLevelCounters[specId].top) specLevelCounters[specId].top = lvl;
       specLevelCounters[specId].levels.push(lvl);
-      if (!specBracketCounters[specId]) specBracketCounters[specId] = {};
-      const bucket = levelBrackets.find(b => lvl >= b.min && lvl <= b.max) || levelBrackets[0];
-      specBracketCounters[specId][bucket.label] = (specBracketCounters[specId][bucket.label] || 0) + 1;
+      allLevels.push(lvl);
         });
+      });
+    });
+    // Derive dynamic level brackets from observed keystone level distribution
+    const buildPercentile = (sorted, p) => {
+      if (!sorted.length) return 0;
+      const idx = (sorted.length - 1) * p;
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      if (lo === hi) return sorted[lo];
+      const w = idx - lo;
+      return sorted[lo] * (1 - w) + sorted[hi] * w;
+    };
+    if (allLevels.length > 0) {
+      const sorted = allLevels.slice().sort((a, b) => a - b);
+      const p40 = Math.round(buildPercentile(sorted, 0.40));
+      const p60 = Math.round(buildPercentile(sorted, 0.60));
+      const p80 = Math.round(buildPercentile(sorted, 0.80));
+      const p90 = Math.round(buildPercentile(sorted, 0.90));
+      // Ensure strictly increasing thresholds to avoid overlaps after rounding
+      const t40 = p40;
+      const t60 = Math.max(t40 + 1, p60);
+      const t80 = Math.max(t60 + 1, p80);
+      const t90 = Math.max(t80 + 1, p90);
+      levelBrackets = [
+        { label: 'P40-60', min: t40, max: t60 },
+        { label: 'P60-80', min: t60, max: t80 },
+        { label: 'P80-90', min: t80, max: t90 },
+        { label: 'P90+',   min: t90, max: Infinity }
+      ];
+    } else {
+      // Fallback (should be rare given noRunsData check)
+      levelBrackets = [
+        { label: 'P40-60', min: 10, max: 15 },
+        { label: 'P60-80', min: 15, max: 20 },
+        { label: 'P80-90', min: 20, max: 25 },
+        { label: 'P90+',   min: 25, max: Infinity }
+      ];
+    }
+    // Now count per-spec levels into dynamic brackets (max exclusive except last bucket)
+    const pickBucket = (lvl) => {
+      for (let i = 0; i < levelBrackets.length; i++) {
+        const b = levelBrackets[i];
+        const isLast = i === levelBrackets.length - 1;
+        if (isLast ? (lvl >= b.min) : (lvl >= b.min && lvl < b.max)) return b;
+      }
+      return levelBrackets[0];
+    };
+    Object.entries(specLevelCounters).forEach(([sid, obj]) => {
+      if (!specBracketCounters[sid]) specBracketCounters[sid] = {};
+      levelBrackets.forEach(b => { if (specBracketCounters[sid][b.label] == null) specBracketCounters[sid][b.label] = 0; });
+      (obj.levels || []).forEach((lvl) => {
+        const bucket = pickBucket(lvl);
+        specBracketCounters[sid][bucket.label] = (specBracketCounters[sid][bucket.label] || 0) + 1;
       });
     });
     // Compute usage% per spec (DPS divided by 3 spots)
@@ -1775,8 +1820,8 @@ router.post('/tier-list', async (req, res) => {
 RULES:
 - Consider role context: tanks and healers each have 1 spot, DPS have 3 per group.
 - Fairness across roles: compare specs using role-normalized usage = usage / expectedShareForRole. This removes the bias that tanks/healers (fewer specs) naturally have higher usage than DPS (many specs). Use this normalized ratio as your primary usage signal.
-- Base strength on BOTH role-normalized usage and key level distribution. Specs with higher representation at higher key levels (20+, 25+, 28+) should be favored even if overall raw usage is lower. Use evolution counts only as secondary trend hints.
-- When two specs have similar usage, prefer the spec with a greater share in higher brackets (20-24, 25-27, 28+). Use a reasonable mental weighting like: score ≈ usage * (1 + 0.35*share20_24 + 0.7*share25_27 + 1.0*share28plus) where shares are fractions (0-1). You may deviate if distributions strongly suggest otherwise.
+- Base strength on BOTH role-normalized usage and dynamic key level distribution. Brackets are provided in levelBracketDefs (derived from current data percentiles, e.g., P40–P60, P60–P80, P80–P90, P90+). Favor higher brackets as defined there. Use evolution counts only as secondary trend hints.
+- When two specs have similar usage, prefer the spec with a greater share in later (higher) brackets. A reasonable heuristic: score ≈ usage * (1 + Σ w_i * shareBracket_i), where weights increase with bracket index (last bracket > previous > ...). Shares are fractions (0–1). You may deviate if distributions strongly suggest otherwise.
 - Keep S-tier small and meaningful; do not exceed 5 specs across all roles in S.
 - Avoid duplicates; each spec appears in exactly one tier.
 - Prefer higher usage and improving trends for higher tiers; very low usage goes to C/D.
