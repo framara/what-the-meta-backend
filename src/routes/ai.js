@@ -1819,12 +1819,19 @@ router.post('/tier-list', async (req, res) => {
 
 RULES:
 - Consider role context: tanks and healers each have 1 spot, DPS have 3 per group.
-- Fairness across roles: compare specs using role-normalized usage = usage / expectedShareForRole. This removes the bias that tanks/healers (fewer specs) naturally have higher usage than DPS (many specs). Use this normalized ratio as your primary usage signal.
-- Base strength on BOTH role-normalized usage and dynamic key level distribution. Brackets are provided in levelBracketDefs (derived from current data percentiles, e.g., P40–P60, P60–P80, P80–P90, P90+). Favor higher brackets as defined there. Use evolution counts only as secondary trend hints.
-- When two specs have similar usage, prefer the spec with a greater share in later (higher) brackets. A reasonable heuristic: score ≈ usage * (1 + Σ w_i * shareBracket_i), where weights increase with bracket index (last bracket > previous > ...). Shares are fractions (0–1). You may deviate if distributions strongly suggest otherwise.
+- Use role-normalized usage = usage / expectedShareForRole to compare specs fairly across roles.
+- PRIORITIZE HIGH-KEY PERFORMANCE: Heavily weight presence in higher keystone brackets. You'll receive:
+  - levelBracketDefs: dynamic percentile brackets (e.g., P40–P60 … P90+).
+  - bracketWeights: numeric weights per bracket label (later/higher brackets have greater weights).
+  - levelDistributionBySpec.byBracketPct: percent of runs per bracket for each spec.
+  - highKeyPriorityScoreBySpec: a precomputed composite score that already emphasizes higher keys more than popularity.
+- Ranking guidance:
+  1) Rank primarily by highKeyPriorityScoreBySpec (higher is better).
+  2) Break close ties using roleNormalizedUsageBySpec, then raw popularityScoreBySpec if needed.
+  3) Use evolution trends only as secondary hints.
 - Keep S-tier small and meaningful; do not exceed 5 specs across all roles in S.
 - Avoid duplicates; each spec appears in exactly one tier.
-- Prefer higher usage and improving trends for higher tiers; very low usage goes to C/D.
+- Prefer improving trends; very low usage goes to C/D unless high-key data strongly contradicts.
 OUTPUT: JSON only with { "tiers": { "S": SpecEntry[], "A": SpecEntry[], "B": SpecEntry[], "C": SpecEntry[], "D": SpecEntry[] } }.
 Use EXACT uppercase keys: "S","A","B","C","D"; include all keys even if empty.
 SpecEntry fields: { specId, specName, className, role, usage }.`;
@@ -1833,13 +1840,61 @@ SpecEntry fields: { specId, specName, className, role, usage }.`;
     const classRef = WOW_CLASSES.reduce((acc, c) => { acc[c.id] = c.name; return acc; }, {});
     const roleRef = WOW_SPEC_ROLES;
 
+    // Compute bracket-driven high-key weighting and composite scores to emphasize higher keys
+    // Define progressive weights for brackets (last bracket highest). If number of brackets differs, extra brackets use last weight.
+    const defaultBracketWeights = [0.2, 0.6, 1.2, 2.2];
+    const bracketWeights = {};
+    levelBrackets.forEach((b, idx) => {
+      const w = idx < defaultBracketWeights.length
+        ? defaultBracketWeights[idx]
+        : defaultBracketWeights[defaultBracketWeights.length - 1] + (idx - defaultBracketWeights.length + 1) * 0.4;
+      bracketWeights[b.label] = Math.round(w * 100) / 100;
+    });
+
+    // Compute high-key bias per spec: sum of (share_in_bracket * weight)
+    const highKeyBiasBySpec = {};
+    let maxHighKeyBias = 0;
+    Object.entries(levelDistributionBySpec).forEach(([sid, dist]) => {
+      const byPct = dist.byBracketPct || {};
+      let bias = 0;
+      levelBrackets.forEach((b) => {
+        const sharePct = Number(byPct[b.label] || 0);
+        const share = Math.max(0, Math.min(1, sharePct / 100));
+        bias += share * (Number(bracketWeights[b.label]) || 0);
+      });
+      highKeyBiasBySpec[sid] = Math.round(bias * 1000) / 1000;
+      if (bias > maxHighKeyBias) maxHighKeyBias = bias;
+    });
+
+    // Normalize role-normalized usage and raw popularity for composite scoring
+    let maxRoleNorm = 0; Object.values(roleNormalizedUsageBySpec).forEach(v => { const n = Number(v) || 0; if (n > maxRoleNorm) maxRoleNorm = n; });
+    let maxUsage = 0; Object.values(usageBySpec).forEach(u => { const n = Number(u) || 0; if (n > maxUsage) maxUsage = n; });
+    const popularityScoreBySpec = {};
+    Object.entries(usageBySpec).forEach(([sid, u]) => { popularityScoreBySpec[sid] = maxUsage > 0 ? Math.round((Number(u)/maxUsage) * 1000) / 1000 : 0; });
+
+    // Composite score prioritizing higher keys but giving popularity a bit more weight
+    const highKeyPriorityScoreBySpec = {};
+    Object.keys(usageBySpec).forEach((sid) => {
+      const rn = maxRoleNorm > 0 ? (Number(roleNormalizedUsageBySpec[sid] || 0) / maxRoleNorm) : 0;
+      const hb = maxHighKeyBias > 0 ? (Number(highKeyBiasBySpec[sid] || 0) / maxHighKeyBias) : 0;
+      // Blend role-normalized usage with raw popularity to reflect both fairness and actual pick rates
+      const pop = Number(popularityScoreBySpec[sid] || 0);
+      const usageComposite = 0.8 * rn + 0.2 * pop; // heavier on role-normalized, but include raw pop
+      const score = 0.55 * hb + 0.45 * usageComposite; // still emphasize high keys, but give usage more weight than before
+      highKeyPriorityScoreBySpec[sid] = Math.round(score * 1000) / 1000;
+    });
+
     const payloadData = {
       seasonId,
       usageBySpec,
       expectedShareByRole,
       roleNormalizedUsageBySpec,
+      popularityScoreBySpec,
       levelBracketDefs: levelBrackets,
+      bracketWeights,
       levelDistributionBySpec,
+      highKeyBiasBySpec,
+      highKeyPriorityScoreBySpec,
       evolution: evoSlice.map(e => ({ period_id: e.period_id, spec_counts: e.spec_counts })),
       specRef,
       classRef,
