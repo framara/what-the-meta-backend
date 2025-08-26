@@ -16,8 +16,9 @@ const router = express.Router();
  *    - Frontend Usage:
  *      * App.tsx (Home page) - Main leaderboard display with SummaryStats and LeaderboardTable
  *      * GroupCompositionPage - For group composition analysis
+ *      * CompAllSeasonsPage - Season-by-season streaming (enhanced format)
  *    - Parameters: season_id (required), period_id (optional), dungeon_id (optional), limit, offset
- *    - Returns: Array of run objects with id, keystone_level, score, rank, dungeon_id, duration_ms, completed_at, members
+ *    - Returns: Object with season_info (season_id, season_name, expansion, patch), meta (total_runs, limit, offset), and data array
  * 
  * 2. GET /meta/top-keys-all-seasons
  *    - Purpose: Retrieves top keys from all seasons for historical analysis
@@ -106,7 +107,25 @@ router.get('/top-keys', async (req, res) => {
   }
   try {
     const { rows } = await db.pool.query(sql, params);
-    res.json(rows);
+    
+    // Get season metadata
+    const seasonMetadata = SEASON_METADATA[season_id];
+    
+    // Return enhanced response with season metadata
+    res.json({
+      season_info: {
+        season_id: parseInt(season_id),
+        season_name: seasonMetadata?.name || `Season ${season_id}`,
+        expansion: seasonMetadata?.expansion || 'Unknown',
+        patch: seasonMetadata?.patch || 'Unknown'
+      },
+      meta: {
+        total_runs: rows.length,
+        limit: limit,
+        offset: offset
+      },
+      data: rows
+    });
   } catch (err) {
     console.error('[TOP KEYS ERROR]', err);
     res.status(500).json({ error: err.message });

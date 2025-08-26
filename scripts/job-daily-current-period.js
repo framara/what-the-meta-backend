@@ -292,7 +292,14 @@ async function cleanupLeaderboard(seasonId) {
 
 // Step 5: Refresh materialized views
 async function refreshViews() {
-  console.log('[DAILY] Refreshing materialized views');
+  const skipRefresh = String(process.env.SKIP_REFRESH_VIEWS || 'false').toLowerCase() === 'true';
+  
+  if (skipRefresh) {
+    console.log('[DAILY] Skipping materialized views refresh (SKIP_REFRESH_VIEWS=true)');
+    return { status: 'SKIPPED', message: 'Refresh views skipped via environment variable' };
+  }
+  
+  console.log('[DAILY] Refreshing materialized views (this may take several hours)');
   
   try {
     const response = await makeRequest('POST', '/admin/refresh-views');

@@ -1178,16 +1178,92 @@ router.post('/clear-output', async (req, res) => {
 
 // --- Refresh materialized views endpoint ---
 router.post('/refresh-views', async (req, res) => {
+  const startTime = Date.now();
+  const views = [
+    'top_keys_per_group',
+    'top_keys_global', 
+    'top_keys_per_period',
+    'top_keys_per_dungeon'
+  ];
+  
   try {
-    // Use CONCURRENTLY refresh to allow views to remain available during refresh
-    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_group;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_global;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_period;');
-    await db.pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY top_keys_per_dungeon;');
-    res.json({ status: 'OK', message: 'All materialized views refreshed.' });
+    console.log(`[REFRESH-VIEWS] Starting refresh of ${views.length} materialized views...`);
+    
+    for (let i = 0; i < views.length; i++) {
+      const viewName = views[i];
+      const viewStartTime = Date.now();
+      
+      console.log(`[REFRESH-VIEWS] Refreshing view ${i + 1}/${views.length}: ${viewName}...`);
+      
+      // Use CONCURRENTLY refresh to allow views to remain available during refresh
+      await db.pool.query(`REFRESH MATERIALIZED VIEW CONCURRENTLY ${viewName};`);
+      
+      const viewDuration = (Date.now() - viewStartTime) / 1000;
+      console.log(`[REFRESH-VIEWS] ✅ Completed ${viewName} in ${viewDuration.toFixed(1)}s`);
+    }
+    
+    const totalDuration = (Date.now() - startTime) / 1000;
+    const message = `All ${views.length} materialized views refreshed in ${totalDuration.toFixed(1)}s`;
+    
+    console.log(`[REFRESH-VIEWS] ${message}`);
+    res.json({ 
+      status: 'OK', 
+      message,
+      duration_seconds: totalDuration,
+      views_refreshed: views.length
+    });
   } catch (error) {
-    res.status(500).json({ status: 'NOT OK', error: error.message });
+    const errorDuration = (Date.now() - startTime) / 1000;
+    console.error(`[REFRESH-VIEWS] ❌ Failed after ${errorDuration.toFixed(1)}s:`, error.message);
+    res.status(500).json({ 
+      status: 'NOT OK', 
+      error: error.message,
+      duration_seconds: errorDuration 
+    });
   }
+});
+
+// --- Async refresh materialized views endpoint (non-blocking) ---
+router.post('/refresh-views-async', async (req, res) => {
+  const views = [
+    'top_keys_per_group',
+    'top_keys_global', 
+    'top_keys_per_period',
+    'top_keys_per_dungeon'
+  ];
+  
+  // Start the refresh process in the background
+  const refreshPromise = (async () => {
+    const startTime = Date.now();
+    console.log(`[REFRESH-VIEWS-ASYNC] Starting background refresh of ${views.length} materialized views...`);
+    
+    try {
+      for (let i = 0; i < views.length; i++) {
+        const viewName = views[i];
+        const viewStartTime = Date.now();
+        
+        console.log(`[REFRESH-VIEWS-ASYNC] Refreshing view ${i + 1}/${views.length}: ${viewName}...`);
+        await db.pool.query(`REFRESH MATERIALIZED VIEW CONCURRENTLY ${viewName};`);
+        
+        const viewDuration = (Date.now() - viewStartTime) / 1000;
+        console.log(`[REFRESH-VIEWS-ASYNC] ✅ Completed ${viewName} in ${viewDuration.toFixed(1)}s`);
+      }
+      
+      const totalDuration = (Date.now() - startTime) / 1000;
+      console.log(`[REFRESH-VIEWS-ASYNC] ✅ All ${views.length} materialized views refreshed in ${totalDuration.toFixed(1)}s`);
+    } catch (error) {
+      const errorDuration = (Date.now() - startTime) / 1000;
+      console.error(`[REFRESH-VIEWS-ASYNC] ❌ Background refresh failed after ${errorDuration.toFixed(1)}s:`, error.message);
+    }
+  })();
+  
+  // Return immediately without waiting
+  res.json({ 
+    status: 'OK', 
+    message: 'Materialized views refresh started in background',
+    views_to_refresh: views.length,
+    note: 'Check server logs for progress updates'
+  });
 });
 
 // --- Automation endpoints for Render.com ---
