@@ -299,14 +299,22 @@ async function refreshViews() {
     return { status: 'SKIPPED', message: 'Refresh views skipped via environment variable' };
   }
   
-  console.log('[DAILY] Refreshing materialized views (this may take several hours)');
+  console.log('[DAILY] Starting materialized views refresh in background (non-blocking)');
+  console.log('[DAILY] This process will continue in the background after automation completes');
   
   try {
-    const response = await makeRequest('POST', '/admin/refresh-views');
-    console.log('[DAILY] Successfully refreshed materialized views');
+    // Use async endpoint to avoid timeout issues
+    const response = await makeRequest('POST', '/admin/refresh-views-async');
+    console.log('[DAILY] Successfully started materialized views refresh in background');
+    console.log('[DAILY] Check server logs for progress updates on materialized views refresh');
+    
+    // Optional: Add info about checking status via database query
+    console.log('[DAILY] To check if materialized views are still refreshing, you can query:');
+    console.log('[DAILY]   SELECT pid, state, query FROM pg_stat_activity WHERE query LIKE \'%REFRESH MATERIALIZED VIEW%\';');
+    
     return response;
   } catch (error) {
-    console.error('[DAILY ERROR] Failed to refresh materialized views:', error.message);
+    console.error('[DAILY ERROR] Failed to start materialized views refresh:', error.message);
     throw error;
   }
 }
