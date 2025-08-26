@@ -255,14 +255,22 @@ async function cleanupLeaderboard(seasonId) {
 
 // Step 5: Refresh materialized views
 async function refreshViews() {
-  console.log('[WEEKLY] Refreshing materialized views');
+  console.log('[WEEKLY] Starting materialized views refresh in background (non-blocking)');
+  console.log('[WEEKLY] This process will continue in the background after automation completes');
   
   try {
-    const response = await makeRequest('POST', '/admin/refresh-views');
-    console.log('[WEEKLY] Successfully refreshed materialized views');
+    // Use async endpoint to avoid timeout issues
+    const response = await makeRequest('POST', '/admin/refresh-views-async');
+    console.log('[WEEKLY] Successfully started materialized views refresh in background');
+    console.log('[WEEKLY] Check server logs for progress updates on materialized views refresh');
+    
+    // Optional: Add info about checking status via database query
+    console.log('[WEEKLY] To check if materialized views are still refreshing, you can query:');
+    console.log('[WEEKLY]   SELECT pid, state, query FROM pg_stat_activity WHERE query LIKE \'%REFRESH MATERIALIZED VIEW%\';');
+    
     return response;
   } catch (error) {
-    console.error('[WEEKLY ERROR] Failed to refresh materialized views:', error.message);
+    console.error('[WEEKLY ERROR] Failed to start materialized views refresh:', error.message);
     throw error;
   }
 }
