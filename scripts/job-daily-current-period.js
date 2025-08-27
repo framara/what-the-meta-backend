@@ -40,15 +40,29 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
       console.log(`[DAILY] ${method} ${endpoint} - Status: ${response.status}`);
       return response.data;
     } catch (error) {
+      const errorMessage = error.response?.data?.error || error.message;
       console.error(`[DAILY ERROR] ${method} ${endpoint} failed (attempt ${attempt}/${retries}):`, error.response?.data || error.message);
       
       if (attempt === retries) {
         throw error;
       }
       
-      // Wait before retry
-      const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
-      console.log(`[DAILY] Retrying in ${delay}ms...`);
+      // Special handling for database connection errors - longer delays
+      const isDatabaseError = errorMessage.includes('not yet accepting connections') || 
+                             errorMessage.includes('connection error') ||
+                             errorMessage.includes('Client has encountered a connection error');
+      
+      let delay;
+      if (isDatabaseError) {
+        // Longer delays for database connectivity issues
+        delay = Math.min(30000, Math.pow(2, attempt) * 5000); // Up to 30s delay
+        console.log(`[DAILY] Database connectivity issue detected. Retrying in ${delay}ms...`);
+      } else {
+        // Standard exponential backoff for other errors
+        delay = Math.pow(2, attempt) * 1000;
+        console.log(`[DAILY] Retrying in ${delay}ms...`);
+      }
+      
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -207,15 +221,34 @@ async function fetchLeaderboardData() {
 async function importLeaderboardData() {
   console.log('[DAILY] Starting import of leaderboard JSON files');
 
+  // Check database connectivity before starting import
+  try {
+    console.log('[DAILY] Verifying database connectivity...');
+    await makeRequest('GET', '/admin/db/stats', null, 1);
+    console.log('[DAILY] Database connectivity verified');
+  } catch (error) {
+    console.error('[DAILY ERROR] Database connectivity check failed:', error.message);
+    console.log('[DAILY] Waiting 30 seconds for database to become available...');
+    await new Promise(resolve => setTimeout(resolve, 30000));
+    
+    // Retry once more
+    try {
+      await makeRequest('GET', '/admin/db/stats', null, 1);
+      console.log('[DAILY] Database connectivity verified after retry');
+    } catch (retryError) {
+      throw new Error(`Database not ready for import after retry: ${retryError.message}`);
+    }
+  }
+
   // Loop in smaller batches to avoid upstream 502s/timeouts
   // Tune within safe defaults; delete processed files to avoid reprocessing
   const qs = (params) => {
     const esc = encodeURIComponent;
     return Object.keys(params).map(k => `${esc(k)}=${esc(String(params[k]))}`).join('&');
   };
-  const batchSize = Number(process.env.IMPORT_BATCH_SIZE || 40);
+  const batchSize = Number(process.env.IMPORT_BATCH_SIZE || 30);
   const maxBatchesPerRequest = Number(process.env.IMPORT_MAX_BATCHES || 2);
-  const concurrency = Number(process.env.IMPORT_CONCURRENCY || 6);
+  const concurrency = Number(process.env.IMPORT_CONCURRENCY || 4);
   const deleteProcessed = String(process.env.IMPORT_DELETE || 'true');
 
   let grandTotalRuns = 0;
