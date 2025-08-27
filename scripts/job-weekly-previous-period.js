@@ -215,8 +215,30 @@ async function fetchLeaderboardData() {
 async function importLeaderboardData() {
   console.log('[WEEKLY] Starting import of leaderboard JSON files');
   
+  // Check database connectivity before starting import
   try {
-    const response = await makeRequest('POST', '/admin/import-all-leaderboard-json-fast');
+    console.log('[WEEKLY] Verifying database connectivity...');
+    await makeRequest('GET', '/admin/db/stats', null, 1);
+    console.log('[WEEKLY] Database connectivity verified');
+  } catch (error) {
+    console.error('[WEEKLY ERROR] Database connectivity check failed:', error.message);
+    console.log('[WEEKLY] Waiting 30 seconds for database to become available...');
+    await new Promise(resolve => setTimeout(resolve, 30000));
+    
+    // Retry once more
+    try {
+      await makeRequest('GET', '/admin/db/stats', null, 1);
+      console.log('[WEEKLY] Database connectivity verified after retry');
+    } catch (retryError) {
+      throw new Error(`Database not ready for import after retry: ${retryError.message}`);
+    }
+  }
+  
+  // Use conservative settings to prevent connection exhaustion
+  const query = 'batch_size=30&max_batches=2&concurrency=4&delete_processed=true';
+  
+  try {
+    const response = await makeRequest('POST', `/admin/import-all-leaderboard-json-fast?${query}`);
     console.log('[WEEKLY] Successfully imported leaderboard data');
     return response;
   } catch (error) {
