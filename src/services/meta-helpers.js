@@ -4,14 +4,24 @@ const { SEASON_METADATA, EXPANSION_METADATA } = require('../config/constants');
 /**
  * Helper function to get spec evolution data for a specific season
  * @param {number} season_id - The season ID
+ * @param {Object} filters - Optional filters
+ * @param {number} filters.period_id - Filter by specific period
+ * @param {number} filters.dungeon_id - Filter by specific dungeon
  * @returns {Promise<Object|null>} - Spec evolution data or null if no data
  */
-async function getSpecEvolutionForSeason(season_id) {
-  // Get all periods for the season
-  const periodsResult = await db.pool.query(
-    'SELECT id FROM period WHERE season_id = $1 ORDER BY id',
-    [season_id]
-  );
+async function getSpecEvolutionForSeason(season_id, filters = {}) {
+  // Get periods for the season, optionally filtering by period_id
+  let periodsQuery = 'SELECT id FROM period WHERE season_id = $1';
+  let periodsParams = [season_id];
+  
+  if (filters.period_id) {
+    periodsQuery += ' AND id = $2';
+    periodsParams.push(filters.period_id);
+  }
+  
+  periodsQuery += ' ORDER BY id';
+  
+  const periodsResult = await db.pool.query(periodsQuery, periodsParams);
   const periods = periodsResult.rows;
   
   // Get season and expansion metadata
@@ -37,10 +47,22 @@ async function getSpecEvolutionForSeason(season_id) {
   let weekCounter = 1;
   
   for (const period of periods) {
-    const keysResult = await db.pool.query(
-      'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
-      [season_id, period.id]
-    );
+    let keysResult;
+    
+    if (filters.dungeon_id) {
+      // When filtering by dungeon, use top_keys_per_group to get individual keys
+      keysResult = await db.pool.query(
+        'SELECT members FROM top_keys_per_group WHERE season_id = $1 AND period_id = $2 AND dungeon_id = $3',
+        [season_id, period.id, filters.dungeon_id]
+      );
+    } else {
+      // When not filtering by dungeon, use top_keys_per_period for aggregated data
+      keysResult = await db.pool.query(
+        'SELECT members FROM top_keys_per_period WHERE season_id = $1 AND period_id = $2',
+        [season_id, period.id]
+      );
+    }
+    
     // Aggregate spec counts for this period
     const specCounts = {};
     for (const row of keysResult.rows) {
