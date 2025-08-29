@@ -231,8 +231,14 @@ router.get('/composition-data/:season_id', async (req, res) => {
 // Purpose: Retrieves spec evolution data across all seasons
 // Frontend Usage:
 //   - MetaEvolutionPage - Meta evolution charts and trends
+// Query Parameters: period_id, dungeon_id (optional filters)
 router.get('/spec-evolution', async (req, res) => {
-  console.log(`📊 [META] GET /meta/spec-evolution`);
+  console.log(`📊 [META] GET /meta/spec-evolution`, req.query);
+  
+  // Extract optional query parameters
+  const period_id = req.query.period_id ? Number(req.query.period_id) : undefined;
+  const dungeon_id = req.query.dungeon_id ? Number(req.query.dungeon_id) : undefined;
+  
   try {
     // Get all seasons that have data
     const seasonsResult = await db.pool.query(
@@ -245,7 +251,7 @@ router.get('/spec-evolution', async (req, res) => {
       return res.status(404).json({ error: 'No seasons found with data' });
     }
 
-    // Get spec evolution data for all seasons using the helper function
+    // Get spec evolution data for all seasons using the helper function with filters
     const allSeasonsData = [];
     
     for (const season of seasons) {
@@ -261,8 +267,8 @@ router.get('/spec-evolution', async (req, res) => {
         continue; // Skip seasons with no periods
       }
 
-      // Use the helper function to get spec evolution for this season
-      const seasonData = await getSpecEvolutionForSeason(season_id);
+      // Use the helper function to get spec evolution for this season with filters
+      const seasonData = await getSpecEvolutionForSeason(season_id, { period_id, dungeon_id });
       
       // Only include seasons that have non-empty periods
       if (seasonData !== null) {
@@ -286,15 +292,21 @@ router.get('/spec-evolution', async (req, res) => {
 // Frontend Usage:
 //   - AIPredictionsPage - AI analysis with spec evolution data
 //   - MetaEvolutionPage - Meta evolution charts for specific season
+// Query Parameters: period_id, dungeon_id (optional filters)
 router.get('/spec-evolution/:season_id', async (req, res) => {
-  console.log(`📊 [META] GET /meta/spec-evolution/${req.params.season_id}`);
+  console.log(`📊 [META] GET /meta/spec-evolution/${req.params.season_id}`, req.query);
   const season_id = Number(req.params.season_id);
   if (!season_id) {
     return res.status(400).json({ error: 'season_id is required' });
   }
+  
+  // Extract optional query parameters
+  const period_id = req.query.period_id ? Number(req.query.period_id) : undefined;
+  const dungeon_id = req.query.dungeon_id ? Number(req.query.dungeon_id) : undefined;
+  
   try {
-    // Use the helper function to get spec evolution for this season
-    const result = await getSpecEvolutionForSeason(season_id);
+    // Use the helper function to get spec evolution for this season with filters
+    const result = await getSpecEvolutionForSeason(season_id, { period_id, dungeon_id });
     
     // If the season has no non-empty periods, return 404
     if (result === null) {
