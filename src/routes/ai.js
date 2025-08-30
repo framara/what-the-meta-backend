@@ -798,12 +798,12 @@ router.post('/meta-health', async (req, res) => {
     
     // Basic processing: collect all runs and simple spec usage counts
     const allRuns = [];
-    const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
+  const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
     const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess);
     
     // Collect runs from all periods
     periodsToProcess.forEach(period => {
-      const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
+  const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
       const keysToProcess = period.keys.slice(0, maxKeysPerPeriod);
       allRuns.push(...keysToProcess);
     });
@@ -814,13 +814,13 @@ router.post('/meta-health', async (req, res) => {
     const compositionCounts = {};
 
     allRuns.forEach(run => {
-      const composition = [];
-      const runRoles = new Set();
-
-      run.members?.forEach(member => {
-        const specId = member.spec_id;
-        const role = WOW_SPEC_ROLES[specId] || 'dps';
+        const composition = [];
+        const runRoles = new Set();
         
+      run.members?.forEach(member => {
+          const specId = member.spec_id;
+          const role = WOW_SPEC_ROLES[specId] || 'dps';
+          
         // Initialize spec if not seen
         if (!roleStats[role][specId]) {
           roleStats[role][specId] = { count: 0, totalLevel: 0 };
@@ -830,9 +830,9 @@ router.post('/meta-health', async (req, res) => {
         roleStats[role][specId].count++;
         roleStats[role][specId].totalLevel += run.keystone_level;
         
-        composition.push(specId);
-      });
-
+          composition.push(specId);
+        });
+        
       // Count unique roles per run (for percentage calculations)
       ['tank', 'healer', 'dps'].forEach(role => {
         if (run.members?.some(m => (WOW_SPEC_ROLES[m.spec_id] || 'dps') === role)) {
@@ -862,7 +862,7 @@ router.post('/meta-health', async (req, res) => {
         }
         
         specUsageData[role][specId] = {
-          specId: parseInt(specId),
+            specId: parseInt(specId),
           count: stat.count,
           usagePercentage: Math.round(usagePercentage * 100) / 100,
           avgLevel: stat.count > 0 ? Math.round(stat.totalLevel / stat.count) : 0,
@@ -904,7 +904,7 @@ router.post('/meta-health', async (req, res) => {
       });
 
     // Prepare simplified data for OpenAI analysis
-    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
     const systemPrompt = `You are a WoW Mythic+ meta analyst. Analyze spec usage data to assess meta health.
 
