@@ -21,11 +21,14 @@ Visit [whatthemeta.io](https://whatthemeta.io) to see the application in action.
 ## 🛠️ Tech Stack
 
 - **Backend**: Node.js 18+, Express.js
-- **Database**: PostgreSQL 15+ with optimized schema
-- **API**: Blizzard Game Data API integration
-- **Authentication**: OAuth 2.0 for Blizzard API
-- **Deployment**: Docker, Docker Compose
-- **Monitoring**: Health checks, performance metrics
+- **Database**: PostgreSQL 15+ with optimized schema and materialized views
+- **API**: Blizzard Game Data API integration + RaiderIO API integration
+- **Authentication**: OAuth 2.0 for Blizzard API, Admin authentication
+- **Deployment**: Render.com (Web Service + PostgreSQL Database)
+- **Caching**: Render Edge Caching with Cache-Control headers
+- **Data Processing**: Automated jobs with 4-hour data import cycles
+- **AI Integration**: AI analysis endpoints for meta predictions
+- **Monitoring**: Health checks, performance metrics, database optimization
 
 ## 📋 Prerequisites
 
@@ -79,9 +82,15 @@ RATE_LIMIT_MAX_REQUESTS=100
 
 ### 3. Start PostgreSQL
 
+**For Local Development:**
 ```bash
 docker-compose up -d
 ```
+
+**For Production on Render.com:**
+- PostgreSQL database is provided as a managed service
+- Connection details are automatically provided via environment variables
+- Edge caching is enabled for HTTP responses
 
 ### 4. Initialize Database
 
@@ -124,13 +133,18 @@ wow-api/
 - `npm run dev` - Start development server with nodemon
 - `npm run test` - Run test suite
 - `npm run lint` - Run ESLint
+- `npm run daily-job` - Run daily current period data collection
+- `npm run weekly-job` - Run weekly previous period data collection
+- `npm run rio-latest-job` - Run latest RaiderIO cutoffs collection
 
 ## 📊 API Endpoints Overview
 
 ### Public Endpoints
 - **Game Data**: `GET /wow/game-data/*` - Proxies all Blizzard WoW Game Data endpoints
-- **Health**: `GET /health` - Service health status
-- **Meta Analysis**: `GET /meta/*` - Specialized endpoints for data analysis
+- **Health**: `GET /health` - Service health status and database connectivity
+- **Meta Analysis**: `GET /meta/*` - Specialized endpoints for data analysis and AI consumption
+- **AI Endpoints**: `GET /ai/*` - AI-powered analysis and predictions
+- **RaiderIO**: `GET /raiderio/*` - RaiderIO data integration and cutoffs
 
 ### Advanced Aggregation
 - **Season Data**: `GET /wow/advanced/mythic-leaderboard/:seasonId/` - Collects all season data
@@ -187,21 +201,62 @@ GET /meta/top-keys?season_id=14
 GET /meta/spec-evolution/14
 ```
 
-## 🤖 Automation
+## 🤖 Automation & Data Collection
 
-The system includes automated workflows for daily data collection:
+The system includes automated workflows for continuous data collection with multiple job types:
 
+### **Scheduled Jobs**
+- **Daily Job**: Collects current period data (`scripts/job-daily-current-period.js`)
+- **Weekly Job**: Processes previous period data (`scripts/job-weekly-previous-period.js`)
+- **RaiderIO Job**: Fetches latest cutoffs and static data (`scripts/job-latest-raiderio-cutoffs.js`)
+
+### **Data Import Cycle**
+- Automated data import every 4 hours
+- Smart cache invalidation based on data freshness
+- Render Edge Caching optimizes response times globally
+
+### **Admin Automation Endpoints**
 ```bash
 # Trigger full automation
 POST /admin/automation/trigger
 
 # Check automation status
 GET /admin/automation/status
+
+# Manual job execution
+npm run daily-job
+npm run weekly-job
+npm run rio-latest-job
 ```
 
 ## 📊 Data Sources
 
-All data is sourced from the official Blizzard World of Warcraft API. We do not claim ownership of game data and acknowledge that it belongs to Blizzard Entertainment.
+### **Primary Data Sources**
+- **Blizzard Game Data API**: Official WoW game data, leaderboards, and character information
+- **RaiderIO API**: Mythic+ cutoffs, static data, and community-driven metrics
+
+### **Data Ownership**
+All game data is sourced from official APIs and belongs to Blizzard Entertainment. We do not claim ownership of game data and acknowledge that it belongs to Blizzard Entertainment.
+
+## 🏗️ Production Architecture
+
+### **Render.com Deployment**
+- **Web Service**: Node.js backend with automatic deployments
+- **PostgreSQL Database**: Managed PostgreSQL with automatic backups
+- **Edge Caching**: Global CDN with Cache-Control header optimization
+- **Environment**: Production-ready scaling and monitoring
+
+### **Data Flow**
+1. **Collection**: Automated jobs collect data from Blizzard & RaiderIO APIs
+2. **Processing**: Data is processed and stored in optimized PostgreSQL schema
+3. **Caching**: Responses are cached at the edge for global performance
+4. **Delivery**: Frontend consumes optimized API endpoints
+
+### **Performance Optimizations**
+- **4-hour data refresh cycle** aligns with cache invalidation
+- **Materialized views** for complex aggregations
+- **Strategic indexing** for fast leaderboard queries
+- **Connection pooling** for efficient database usage
 
 ## 🤝 Contributing
 
