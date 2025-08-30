@@ -28,7 +28,7 @@ function logAxiosError(prefix, error) {
 const AI_MAX_PERIODS = Number(process.env.AI_MAX_PERIODS) > 0 ? Number(process.env.AI_MAX_PERIODS) : 18;
 const AI_MAX_KEYS_PER_PERIOD = Number(process.env.AI_MAX_KEYS_PER_PERIOD) > 0 ? Number(process.env.AI_MAX_KEYS_PER_PERIOD) : 1000;
 const AI_MAX_TOKENS_PREDICTIONS = Number(process.env.AI_MAX_TOKENS_PREDICTIONS) > 0 ? Number(process.env.AI_MAX_TOKENS_PREDICTIONS) : 12000;
-const AI_MAX_TOKENS_META = Number(process.env.AI_MAX_TOKENS_META) > 0 ? Number(process.env.AI_MAX_TOKENS_META) : 12000;
+const AI_MAX_TOKENS_META = Number(process.env.AI_MAX_TOKENS_META) > 0 ? Number(process.env.AI_MAX_TOKENS_META) : 6000;
 const AI_MAX_TOKENS_TIER = Number(process.env.AI_MAX_TOKENS_TIER) > 0 ? Number(process.env.AI_MAX_TOKENS_TIER) : 20000;
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS) > 0 ? Number(process.env.OPENAI_TIMEOUT_MS) : 210000;
 
@@ -91,26 +91,42 @@ function validateTierListResponse(resp) {
 function validateMetaHealthResponse(resp) {
   const errors = [];
   if (!resp || typeof resp !== 'object') errors.push('response not an object');
-  const ms = resp.metaSummary;
-  if (!ms || typeof ms !== 'object') errors.push('metaSummary missing');
-  else {
-    if (typeof ms.overallState !== 'string') errors.push('metaSummary.overallState must be string');
-    if (typeof ms.summary !== 'string') errors.push('metaSummary.summary must be string');
-    if (!isStringArray(ms.keyInsights || [])) errors.push('metaSummary.keyInsights must be string[]');
+  if (!resp.metaSummary) errors.push('metaSummary missing');
+  if (!resp.roleAnalysis) errors.push('roleAnalysis missing');
+  if (!resp.compositionAnalysis) errors.push('compositionAnalysis missing');
+  if (!Array.isArray(resp.balanceIssues)) errors.push('balanceIssues must be array');
+  
+  // Check for spec IDs in text fields (AI should use spec names, not IDs)
+  const checkForSpecIds = (text) => {
+    if (typeof text === 'string' && /\bSpec\s+\d+\b/i.test(text)) {
+      return true;
+    }
+    return false;
+  };
+  
+  // Check metaSummary
+  if (resp.metaSummary) {
+    if (checkForSpecIds(resp.metaSummary.summary)) {
+      errors.push('metaSummary.summary contains spec IDs instead of names');
+    }
+    if (Array.isArray(resp.metaSummary.keyInsights)) {
+      resp.metaSummary.keyInsights.forEach((insight, index) => {
+        if (checkForSpecIds(insight)) {
+          errors.push(`metaSummary.keyInsights[${index}] contains spec IDs instead of names`);
+        }
+      });
+    }
   }
-  const ra = resp.roleAnalysis;
-  if (!ra || typeof ra !== 'object') errors.push('roleAnalysis missing');
-  else {
-    ['tank','healer','dps'].forEach(role => {
-      const r = ra[role];
-      if (!r || typeof r !== 'object') { errors.push(`roleAnalysis.${role} missing`); return; }
-      if (!Array.isArray(r.dominantSpecs)) errors.push(`roleAnalysis.${role}.dominantSpecs must be array`);
-      if (!Array.isArray(r.underusedSpecs)) errors.push(`roleAnalysis.${role}.underusedSpecs must be array`);
-      if (typeof r.healthStatus !== 'string') errors.push(`roleAnalysis.${role}.healthStatus must be string`);
-      if (typeof r.totalRuns !== 'number') errors.push(`roleAnalysis.${role}.totalRuns must be number`);
+  
+  // Check balanceIssues
+  if (Array.isArray(resp.balanceIssues)) {
+    resp.balanceIssues.forEach((issue, index) => {
+      if (checkForSpecIds(issue.description)) {
+        errors.push(`balanceIssues[${index}].description contains spec IDs instead of names`);
+      }
     });
   }
-  if (!Array.isArray(resp.balanceIssues)) errors.push('balanceIssues must be array');
+  
   return { ok: errors.length === 0, errors };
 }
 
@@ -777,416 +793,211 @@ router.post('/meta-health', async (req, res) => {
       console.log(`📋 [AI] No cached data found for season ${seasonId}`);
     }
 
-    // Process and condense data for AI analysis (similar to predictions endpoint)
-    console.log(`📊 [AI] Processing data for meta health analysis...`);
+    // Simplified data processing - let AI do the analysis instead of duplicating logic
+    console.log(`📊 [AI] Processing simplified data for meta health analysis...`);
     
-    // Limit processing to avoid memory and token issues
-  const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
+    // Basic processing: collect all runs and simple spec usage counts
+    const allRuns = [];
+    const maxPeriodsToProcess = Math.min(compositionData.total_periods, AI_MAX_PERIODS);
     const periodsToProcess = compositionData.periods.slice(-maxPeriodsToProcess);
     
-    // Process composition data for meta health analysis
-    const metaHealthData = {
-      season: {
-        id: seasonId,
-        totalPeriods: compositionData.total_periods,
-        totalKeys: compositionData.total_keys,
-        processedPeriods: periodsToProcess.length
-      },
-      roleAnalysis: {
-        tank: { specs: {}, totalRuns: 0, compositions: [] },
-        healer: { specs: {}, totalRuns: 0, compositions: [] },
-        dps: { specs: {}, totalRuns: 0, compositions: [] }
-      },
-      compositionAnalysis: {
-        totalCompositions: 0,
-        compositionCounts: {},
-        roleBalance: { tank: 0, healer: 0, dps: 0 }
-      },
-      temporalAnalysis: {
-        periodData: [],
-        specEvolution: specEvolution.evolution.slice(-maxPeriodsToProcess) // Limit evolution data too
-      }
-    };
-
-    // Process periods for meta health analysis
-    periodsToProcess.forEach((period, periodIndex) => {
-      const periodKeys = period.keys;
-      const totalLevel = periodKeys.reduce((sum, run) => sum + run.keystone_level, 0);
-      const avgLevelForPeriod = periodKeys.length > 0 ? totalLevel / periodKeys.length : 0;
-      
-      // Limit keys processed per period to avoid memory issues
-  const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
-  const keysToProcess = periodKeys.slice(0, maxKeysPerPeriod);
-      
-      const periodStats = {
-        period: periodIndex + 1,
-        totalRuns: keysToProcess.length,
-        avgLevel: avgLevelForPeriod,
-        roleCounts: { tank: 0, healer: 0, dps: 0 },
-        specCounts: {},
-        compositions: []
-      };
-
-      keysToProcess.forEach((run) => {
-        const composition = [];
-        const roleCounts = { tank: 0, healer: 0, dps: 0 };
-        
-        // Track which specs appeared in this run
-        const runSpecs = new Set();
-        const runRoles = new Set();
-        
-        run.members?.forEach((member) => {
-          const specId = member.spec_id;
-          const role = WOW_SPEC_ROLES[specId] || 'dps';
-          
-          // Count specs by role (only once per run)
-          if (!metaHealthData.roleAnalysis[role].specs[specId]) {
-            metaHealthData.roleAnalysis[role].specs[specId] = {
-              appearances: 0,
-              totalRuns: 0,
-              avgLevel: 0
-            };
-          }
-          
-          // Only count each spec once per run
-          if (!runSpecs.has(specId)) {
-            metaHealthData.roleAnalysis[role].specs[specId].appearances++;
-            metaHealthData.roleAnalysis[role].specs[specId].totalRuns++;
-            metaHealthData.roleAnalysis[role].specs[specId].avgLevel += run.keystone_level;
-            runSpecs.add(specId);
-          }
-          
-          // Only count each role once per run
-          if (!runRoles.has(role)) {
-            metaHealthData.roleAnalysis[role].totalRuns++;
-            runRoles.add(role);
-          }
-          
-          roleCounts[role]++;
-          periodStats.roleCounts[role]++;
-          periodStats.specCounts[specId] = (periodStats.specCounts[specId] || 0) + 1;
-          composition.push(specId);
-        });
-        
-        // Track composition
-        const compositionKey = composition.sort().join(',');
-        if (!metaHealthData.compositionAnalysis.compositionCounts[compositionKey]) {
-          metaHealthData.compositionAnalysis.compositionCounts[compositionKey] = {
-            count: 0,
-            avgLevel: 0,
-            specs: composition
-          };
-        }
-        metaHealthData.compositionAnalysis.compositionCounts[compositionKey].count++;
-        metaHealthData.compositionAnalysis.compositionCounts[compositionKey].avgLevel += run.keystone_level;
-        metaHealthData.compositionAnalysis.totalCompositions++;
-        
-        // Track role balance
-        metaHealthData.compositionAnalysis.roleBalance.tank += roleCounts.tank;
-        metaHealthData.compositionAnalysis.roleBalance.healer += roleCounts.healer;
-        metaHealthData.compositionAnalysis.roleBalance.dps += roleCounts.dps;
-      });
-      
-      // Calculate averages for specs
-      Object.keys(metaHealthData.roleAnalysis).forEach(role => {
-        Object.keys(metaHealthData.roleAnalysis[role].specs).forEach(specId => {
-          const spec = metaHealthData.roleAnalysis[role].specs[specId];
-          if (spec.totalRuns > 0) {
-            spec.avgLevel = Math.round(spec.avgLevel / spec.totalRuns);
-          }
-        });
-      });
-      
-      metaHealthData.temporalAnalysis.periodData.push(periodStats);
+    // Collect runs from all periods
+    periodsToProcess.forEach(period => {
+      const maxKeysPerPeriod = AI_MAX_KEYS_PER_PERIOD;
+      const keysToProcess = period.keys.slice(0, maxKeysPerPeriod);
+      allRuns.push(...keysToProcess);
     });
 
-    // Calculate averages for compositions and limit to top compositions only
-    const sortedCompositions = Object.entries(metaHealthData.compositionAnalysis.compositionCounts)
-      .sort(([,a], [,b]) => b.count - a.count)
-      .slice(0, 30); // Only keep top 30 compositions
-    
-    const limitedCompositionCounts = {};
-    sortedCompositions.forEach(([key, comp]) => {
-      if (comp.count > 0) {
-        comp.avgLevel = Math.round(comp.avgLevel / comp.count);
-      }
-      limitedCompositionCounts[key] = comp;
-    });
-    
-    metaHealthData.compositionAnalysis.compositionCounts = limitedCompositionCounts;
+    // Simple spec usage calculation by role
+    const roleStats = { tank: {}, healer: {}, dps: {} };
+    const roleRunCounts = { tank: 0, healer: 0, dps: 0 };
+    const compositionCounts = {};
 
-    // Enhanced composition analysis: focus on the most popular group and spec replacements
-    const compositionAnalysis = {
-      mostPopularGroup: null,
-      specReplacements: {},
-      compositionDiversity: 'Medium',
-      dominantPatterns: []
-    };
+    allRuns.forEach(run => {
+      const composition = [];
+      const runRoles = new Set();
 
-    // Find the single most popular composition
-    const topCompositions = Object.entries(limitedCompositionCounts)
-      .sort(([,a], [,b]) => b.count - a.count)
-      .slice(0, 1); // Only the most popular composition
-
-    if (topCompositions.length > 0) {
-      const mostPopularComposition = topCompositions[0][1];
-      const mostPopularSpecs = new Set(mostPopularComposition.specs);
-      
-      // Set the most popular group
-      compositionAnalysis.mostPopularGroup = {
-        specs: mostPopularComposition.specs,
-        specNames: mostPopularComposition.specs.map(specId => WOW_SPECIALIZATIONS[specId] || `Spec ${specId}`),
-        usage: (mostPopularComposition.count / metaHealthData.compositionAnalysis.totalCompositions) * 100,
-        avgLevel: mostPopularComposition.avgLevel,
-        count: mostPopularComposition.count
-      };
-
-      // Analyze spec replacements for each member of the most popular group
-      const specReplacements = {};
-      
-      mostPopularComposition.specs.forEach(specId => {
-        const specName = WOW_SPECIALIZATIONS[specId] || `Spec ${specId}`;
+      run.members?.forEach(member => {
+        const specId = member.spec_id;
         const role = WOW_SPEC_ROLES[specId] || 'dps';
         
-        // Find all compositions where this spec is replaced by another spec
-        const replacements = [];
-        const replacementCounts = {};
-        
-        Object.entries(limitedCompositionCounts).forEach(([key, comp]) => {
-          if (comp.specs.length !== 5) return; // Only 5-spec compositions
-          
-          // Check if this composition shares 4 specs with the most popular group
-          const sharedSpecs = comp.specs.filter(spec => mostPopularSpecs.has(spec));
-          if (sharedSpecs.length === 4) {
-            // Find which spec is different (the replacement)
-            const differentSpec = comp.specs.find(spec => !mostPopularSpecs.has(spec));
-            const replacedSpec = mostPopularComposition.specs.find(spec => !comp.specs.includes(spec));
-            
-            // Only count if this composition is replacing the specific spec we're analyzing
-            if (replacedSpec === specId && differentSpec) {
-              const replacementRole = WOW_SPEC_ROLES[differentSpec] || 'dps';
-              
-              // Only count if the replacement is the same role as the original spec
-              if (replacementRole === role) {
-                if (!replacementCounts[differentSpec]) {
-                  replacementCounts[differentSpec] = {
-                    count: 0,
-                    avgLevel: 0,
-                    specName: WOW_SPECIALIZATIONS[differentSpec] || `Spec ${differentSpec}`,
-                    role: replacementRole
-                  };
-                }
-                replacementCounts[differentSpec].count += comp.count;
-                replacementCounts[differentSpec].avgLevel += comp.avgLevel * comp.count;
-              }
-            }
-          }
-        });
-        
-        // Convert to array and sort by count
-        const sortedReplacements = Object.entries(replacementCounts)
-          .map(([specId, data]) => ({
-            specId: parseInt(specId),
-            specName: data.specName,
-            count: data.count,
-            avgLevel: Math.round(data.avgLevel / data.count),
-            usage: (data.count / metaHealthData.compositionAnalysis.totalCompositions) * 100,
-            role: data.role
-          }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 5); // Top 5 replacements
-        
-        specReplacements[specId] = {
-          specName: specName,
-          role: role,
-          replacements: sortedReplacements
-        };
-      });
-      
-      compositionAnalysis.specReplacements = specReplacements;
-    }
-
-    // Assess composition diversity
-    const uniqueCompositions = Object.keys(limitedCompositionCounts).length;
-    const totalRuns = metaHealthData.compositionAnalysis.totalCompositions;
-    const diversityRatio = uniqueCompositions / totalRuns;
-    
-    if (diversityRatio > 0.1) {
-      compositionAnalysis.compositionDiversity = 'High';
-    } else if (diversityRatio > 0.05) {
-      compositionAnalysis.compositionDiversity = 'Medium';
-    } else {
-      compositionAnalysis.compositionDiversity = 'Low';
-    }
-
-    // Add composition analysis to metaHealthData
-    metaHealthData.compositionAnalysis = {
-      ...metaHealthData.compositionAnalysis,
-      ...compositionAnalysis
-    };
-    // Create a brief composition summary for the AI prompt to reduce tokens
-    const compositionBrief = {
-      mostPopularGroup: metaHealthData.compositionAnalysis.mostPopularGroup,
-      specReplacements: metaHealthData.compositionAnalysis.specReplacements,
-      compositionDiversity: metaHealthData.compositionAnalysis.compositionDiversity
-    };
-
-    // Pre-calculate spec usage totals and percentages for each role
-    const specUsageData = {
-      tank: { specs: {}, totalRuns: metaHealthData.roleAnalysis.tank.totalRuns },
-      healer: { specs: {}, totalRuns: metaHealthData.roleAnalysis.healer.totalRuns },
-      dps: { specs: {}, totalRuns: metaHealthData.roleAnalysis.dps.totalRuns }
-    };
-
-    // Calculate usage percentages for each spec in each role
-    Object.keys(metaHealthData.roleAnalysis).forEach(role => {
-      const roleData = metaHealthData.roleAnalysis[role];
-      const totalRuns = roleData.totalRuns;
-      
-      Object.keys(roleData.specs).forEach(specId => {
-        const spec = roleData.specs[specId];
-        
-        // For DPS, account for 3 spots per group
-        let usagePercentage;
-        if (role === 'dps') {
-          const totalPossibleDpsSpots = totalRuns * 3;
-          usagePercentage = totalPossibleDpsSpots > 0 ? (spec.appearances / totalPossibleDpsSpots) * 100 : 0;
-        } else {
-          // For tank and healer, use total runs (1 spot per group)
-          usagePercentage = totalRuns > 0 ? (spec.appearances / totalRuns) * 100 : 0;
+        // Initialize spec if not seen
+        if (!roleStats[role][specId]) {
+          roleStats[role][specId] = { count: 0, totalLevel: 0 };
         }
         
-        specUsageData[role].specs[specId] = {
-          appearances: spec.appearances,
-          usagePercentage: Math.round(usagePercentage * 100) / 100, // Round to 2 decimal places
-          avgLevel: spec.avgLevel
+        // Count spec appearance
+        roleStats[role][specId].count++;
+        roleStats[role][specId].totalLevel += run.keystone_level;
+        
+        composition.push(specId);
+      });
+
+      // Count unique roles per run (for percentage calculations)
+      ['tank', 'healer', 'dps'].forEach(role => {
+        if (run.members?.some(m => (WOW_SPEC_ROLES[m.spec_id] || 'dps') === role)) {
+          roleRunCounts[role]++;
+        }
+      });
+
+      // Track compositions (top 10 only to reduce size)
+      const compKey = composition.sort().join(',');
+      compositionCounts[compKey] = (compositionCounts[compKey] || 0) + 1;
+    });
+
+    // Calculate percentages and prepare final data with proper spec names
+    const specUsageData = { tank: {}, healer: {}, dps: {} };
+    
+    Object.keys(roleStats).forEach(role => {
+      const totalRuns = roleRunCounts[role];
+      Object.keys(roleStats[role]).forEach(specId => {
+        const stat = roleStats[role][specId];
+        
+        // Calculate usage percentage based on role slots (DPS has 3 slots, others have 1)
+        let usagePercentage;
+        if (role === 'dps') {
+          usagePercentage = totalRuns > 0 ? (stat.count / (totalRuns * 3)) * 100 : 0;
+        } else {
+          usagePercentage = totalRuns > 0 ? (stat.count / totalRuns) * 100 : 0;
+        }
+        
+        specUsageData[role][specId] = {
+          specId: parseInt(specId),
+          count: stat.count,
+          usagePercentage: Math.round(usagePercentage * 100) / 100,
+          avgLevel: stat.count > 0 ? Math.round(stat.totalLevel / stat.count) : 0,
+          specName: (() => {
+          const spec = WOW_SPECIALIZATIONS.find(s => s.id === parseInt(specId));
+          if (spec) {
+            const className = WOW_CLASSES.find(c => c.id === spec.classId)?.name || '';
+            return className ? `${spec.name} ${className}` : spec.name;
+          }
+          return `Spec ${specId}`;
+        })(),
+          role: role
         };
       });
     });
 
-    // Prepare data for OpenAI analysis
-  const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    // Get top 10 compositions only with spec names instead of IDs
+    const topCompositions = Object.entries(compositionCounts)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 10)
+      .map(([specs, count]) => {
+        const specIds = specs.split(',').map(Number);
+        const specNames = specIds.map(specId => {
+          // Find the spec name and class name from WOW_SPECIALIZATIONS
+          const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
+          if (spec) {
+            const className = WOW_CLASSES.find(c => c.id === spec.classId)?.name || '';
+            return className ? `${spec.name} ${className}` : spec.name;
+          }
+          return `Unknown Spec ${specId}`;
+        });
+        
+        return {
+          specs: specIds,
+          specNames: specNames,
+          count,
+          percentage: (count / allRuns.length) * 100
+        };
+      });
+
+    // Prepare simplified data for OpenAI analysis
+    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     
-  const systemPrompt = `You are an expert World of Warcraft Mythic+ meta analyst. Your task is to provide simple, clear insights about the current meta state.
+    const systemPrompt = `You are a WoW Mythic+ meta analyst. Analyze spec usage data to assess meta health.
 
-ANALYSIS REQUIREMENTS:
-1. Identify the most dominant specs in each role (tank, healer, dps)
-   - For tank and healer roles: identify the 3 specs with the HIGHEST usage percentages, but ONLY include specs with 5% or higher usage. If fewer than 3 specs meet the 5% threshold, include only those that do.
-   - For DPS role: identify the 3 specs with the HIGHEST usage percentages (since there are 3 DPS spots in a group)
-   - IMPORTANT: Sort specs by usage percentage (highest to lowest) for dominantSpecs
-   - IMPORTANT: Use the pre-calculated usage percentages from the SPEC USAGE DATA - do NOT calculate percentages yourself
-   - NOTE: DPS percentages are calculated based on total possible DPS spots (totalRuns * 3), not just total runs
-2. Identify any specs that are clearly underperforming or rarely used
-   - For each role: identify the 3 specs with the LOWEST usage percentages
-   - IMPORTANT: Sort specs by usage percentage (lowest to highest) and take the bottom 3 for underusedSpecs
-   - IMPORTANT: Use the pre-calculated usage percentages from the SPEC USAGE DATA
-3. Analyze the most popular group composition and spec flexibility:
-   - Focus on the single most popular group composition (defined by its 5 unique spec IDs)
-   - For each of the 5 specs in the most popular group, identify which other specs are most likely to replace them
-   - Analyze how often each spec in the popular group gets replaced and by which alternatives
-   - Consider if the meta is flexible (many viable replacements) or rigid (few alternatives)
-   - Note if certain specs in the popular group are more replaceable than others
-4. Assess if there are any obvious balance issues:
-   - For tank/healer: a single spec having more than 50% usage is concerning, 75% or more is bad for meta health  
-   - For DPS: a single spec having more than 15% usage is too high (considering 26 DPS specs and only 3 spots available)
-   - For DPS: if the accumulated usage of the top 3 specs is more than 46% of the total runs, then the DPS meta is bad
-5. Provide 2-3 simple, actionable insights about the meta
-6. Use the pre-calculated total run counts from the SPEC USAGE DATA
-7. Keep output concise: dominantSpecs and underusedSpecs lists should include at most 3 items per role. Keep each description under 25 words.
+CRITICAL: NEVER use "Spec [ID]" or spec ID numbers. ALWAYS use actual spec names.
 
-SPEC ROLES MAPPING:
-- Tank specs: 73, 66, 250, 104, 581, 268
-- Healer specs: 65, 256, 257, 264, 105, 270, 1468
-- DPS specs: 71, 72, 70, 253, 254, 255, 259, 260, 261, 258, 251, 252, 262, 263, 62, 63, 64, 265, 266, 267, 269, 102, 103, 577, 1467, 1473
+EXAMPLES:
+✅ "Restoration Shaman represents 60% of healer picks"
+❌ "Spec 264 represents 60% of healer picks"
 
-SPEC NAMES REFERENCE:
-- Tank specs: 73 (Protection Warrior), 66 (Protection Paladin), 250 (Blood Death Knight), 104 (Guardian Druid), 581 (Vengeance Demon Hunter), 268 (Brewmaster Monk)
-- Healer specs: 65 (Holy Paladin), 256 (Discipline Priest), 257 (Holy Priest), 264 (Restoration Shaman), 105 (Restoration Druid), 270 (Mistweaver Monk), 1468 (Preservation Evoker)
-- DPS specs: 71 (Arms Warrior), 72 (Fury Warrior), 70 (Retribution Paladin), 253 (Beast Mastery Hunter), 254 (Marksmanship Hunter), 255 (Survival Hunter), 259 (Assassination Rogue), 260 (Outlaw Rogue), 261 (Subtlety Rogue), 258 (Shadow Priest), 251 (Frost Death Knight), 252 (Unholy Death Knight), 262 (Elemental Shaman), 263 (Enhancement Shaman), 62 (Arcane Mage), 63 (Fire Mage), 64 (Frost Mage), 265 (Affliction Warlock), 266 (Demonology Warlock), 267 (Destruction Warlock), 269 (Windwalker Monk), 102 (Balance Druid), 103 (Feral Druid), 577 (Havoc Demon Hunter), 1467 (Devastation Evoker), 1473 (Augmentation Evoker)
-
-RESPONSE FORMAT:
-Return a JSON object with this exact structure:
+RESPONSE FORMAT (JSON):
 {
   "metaSummary": {
-    "overallState": string, /* "Healthy", "Concerning", "Unhealthy" */
-    "summary": string, /* 1-2 sentence overview of the meta */
-    "keyInsights": [string] /* 2-3 simple insights */
+    "overallState": "Healthy|Concerning|Unhealthy",
+    "summary": "1-2 sentence overview using spec NAMES",
+    "keyInsights": ["insight1 using spec NAMES", "insight2 using spec NAMES", "insight3 using spec NAMES"]
   },
   "roleAnalysis": {
     "tank": {
-      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
+      "dominantSpecs": [{"specId": number, "usage": number, "name": string}],
       "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
-      "healthStatus": string, /* "Good", "Concerning", "Poor" */
-      "totalRuns": number /* Total number of runs for this role */
+      "healthStatus": "Good|Concerning|Poor",
+      "totalRuns": number
     },
-    "healer": {
-      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
-      "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
-      "healthStatus": string, /* "Good", "Concerning", "Poor" */
-      "totalRuns": number /* Total number of runs for this role */
-    },
-    "dps": {
-      "dominantSpecs": [{"specId": number, "usage": number, "name": string}], /* Top 3 most used specs */
-      "underusedSpecs": [{"specId": number, "usage": number, "name": string}],
-      "healthStatus": string, /* "Good", "Concerning", "Poor" */
-      "totalRuns": number /* Total number of runs for this role */
-    }
+    "healer": { /* same structure */ },
+    "dps": { /* same structure */ }
   },
   "compositionAnalysis": {
     "mostPopularGroup": {
-      "specs": [number], /* Array of 5 spec IDs in the most popular composition */
-      "specNames": [string], /* Array of spec names for display */
-      "usage": number, /* Percentage of total runs this composition represents */
-      "avgLevel": number, /* Average keystone level for this composition */
-      "count": number /* Total count of this composition */
+      "specs": [number], "specNames": [string], "usage": number, "count": number
     },
-    "specReplacements": {
-      "specId": {
-        "specName": string, /* Name of the spec in the most popular group */
-        "role": string, /* "tank", "healer", or "dps" */
-        "replacements": [
-          {
-            "specId": number, /* ID of the replacement spec */
-            "specName": string, /* Name of the replacement spec */
-            "count": number, /* How many times this replacement occurred */
-            "avgLevel": number, /* Average keystone level for this replacement */
-            "usage": number, /* Percentage of total runs this replacement represents */
-            "role": string /* Role of the replacement spec */
-          }
-        ]
-      }
-    },
-    "compositionDiversity": string, /* "High", "Medium", "Low" - assessment of composition variety */
-    "dominantPatterns": [string] /* 1-2 sentences about composition flexibility and meta adaptability */
+    "compositionDiversity": "High|Medium|Low",
+    "dominantPatterns": ["pattern description using spec NAMES"]
   },
   "balanceIssues": [
-    {
-      "type": string, /* "dominance", "underuse", "role_imbalance", "composition_stagnation" */
-      "description": string, /* Unique, non-redundant description */
-      "severity": string /* "low", "medium", "high" */
-    }
+    {"type": "dominance|underuse|diversity", "description": "description using spec NAMES", "severity": "low|medium|high"}
   ]
 }
 
-IMPORTANT: Ensure balance issue descriptions are unique and non-redundant. Each issue should focus on a distinct aspect of the meta.`;
+REQUIREMENTS:
+- Use spec names from specName field, never spec IDs
+- Include specId, usage %, and name for dominantSpecs/underusedSpecs
+- Calculate totalRuns per role from spec usage data
+- Use spec names in all text fields
 
-    const userPrompt = `Analyze this processed Mythic+ season data for meta health and diversity:
+GUIDELINES:
+- Tanks/healers: >50% = concerning, >75% = poor
+- DPS: >15% = concerning (3 slots available)`;
 
-SEASON SUMMARY:
-${JSON.stringify(metaHealthData.season, null, 2)}
+    // Create a spec ID to name mapping for the AI
+    const aiSpecIdToName = {};
+    Object.keys(specUsageData).forEach(role => {
+      Object.keys(specUsageData[role]).forEach(specId => {
+        aiSpecIdToName[specId] = specUsageData[role][specId].specName;
+      });
+    });
+    
+    // Debug: Log what spec names are being sent to the AI
+    console.log(`🔍 [AI] Debug: Sample spec names being sent to AI:`);
+    Object.keys(aiSpecIdToName).slice(0, 5).forEach(specId => {
+      console.log(`  Spec ${specId} → ${aiSpecIdToName[specId]}`);
+    });
+    
+    // Debug: Log some examples of class-disambiguated names
+    console.log(`🔍 [AI] Debug: Examples of class-disambiguated names:`);
+    const sampleSpecs = [264, 251, 73, 577, 62]; // Restoration, Frost, Protection, Havoc, Arcane
+    sampleSpecs.forEach(specId => {
+      const spec = WOW_SPECIALIZATIONS.find(s => s.id === specId);
+      if (spec) {
+        const className = WOW_CLASSES.find(c => c.id === spec.classId)?.name || '';
+        const fullName = className ? `${spec.name} ${className}` : spec.name;
+        console.log(`  ${specId} → ${fullName}`);
+      }
+    });
 
-COMPOSITION SUMMARY (top group and replacements only):
-${JSON.stringify(compositionBrief, null, 2)}
+    const userPrompt = `Analyze this Mythic+ season data for meta health:
 
-PRE-CALCULATED SPEC USAGE DATA:
+SEASON: ${seasonId} | RUNS: ${allRuns.length} | PERIODS: ${periodsToProcess.length}
+
+SPEC USAGE BY ROLE:
 ${JSON.stringify(specUsageData, null, 2)}
 
-IMPORTANT: 
-1. Use exact spec names from the reference
-2. Respond ONLY with valid JSON in the exact format specified
-3. Start your response with { and end with }
-4. Do not include any additional text or markdown formatting
-5. Use the pre-calculated usage percentages from the SPEC USAGE DATA above - do NOT calculate percentages yourself`;
+SPEC ID TO NAME MAPPING:
+${JSON.stringify(aiSpecIdToName, null, 2)}
+
+TOP COMPOSITIONS:
+${JSON.stringify(topCompositions, null, 2)}
+
+REQUIREMENTS:
+- Use specName from data, never "Spec [ID]" or spec ID numbers
+- Never include spec IDs in parentheses like "Restoration (264)" - use "Restoration Shaman"
+- Use spec names in all text fields (summary, insights, balance issues, patterns)
+
+Respond with ONLY valid JSON in the exact format specified. No markdown, no explanations.`;
 
     // Decide token parameter key based on model family
     const isGpt5Family = (openAIModel || '').toLowerCase().includes('gpt-5');
@@ -1286,6 +1097,13 @@ IMPORTANT:
     if (finishReason) {
       console.log(`🤖 [AI] finish_reason=${finishReason} prompt_tokens=${usage.prompt_tokens || 'n/a'} completion_tokens=${usage.completion_tokens || 'n/a'}`);
     }
+    
+    // Log the AI response for debugging
+    console.log(`🤖 [AI] Raw AI response received (first 500 chars):`, aiResponse.substring(0, 500));
+    if (aiResponse.includes('Spec ')) {
+      console.log(`⚠️ [AI] WARNING: AI response contains "Spec " patterns!`);
+      console.log(`🤖 [AI] Full AI response:`, aiResponse);
+    }
 
     let parsedResponse;
     let parseErrorMemo;
@@ -1322,7 +1140,7 @@ IMPORTANT:
     parsedResponse = tryStandardParses(aiResponse);
 
     if (!parsedResponse || finishReason === 'length') {
-      console.warn('⚠️ [AI] Initial AI response invalid or truncated; attempting reformat retry (meta-health)');
+      console.warn(`⚠️ [AI] Response truncated due to token limit (${finishReason}). Consider increasing AI_MAX_TOKENS_META or making prompts more concise. Attempting reformat retry...`);
       const useCompletionTokensParam = 'max_completion_tokens' in (triedWithoutJsonFormat ? openAIPromptBase : openAIPrompt);
       const tokenParam = useCompletionTokensParam ? { max_completion_tokens: Math.min(maxTokensMetaHealth * 2, 8000) } : { max_tokens: Math.min(maxTokensMetaHealth * 2, 8000) };
       const reformatBase = {
@@ -1358,45 +1176,168 @@ IMPORTANT:
       });
     }
 
-    // Validate the AI response structure
-    if (!parsedResponse.metaSummary || !parsedResponse.roleAnalysis || !parsedResponse.balanceIssues) {
-      return res.status(500).json({ error: 'Invalid AI response format - missing required sections' });
+    // Post-process to fix any spec IDs BEFORE validation
+    console.log(`🔧 [AI] Post-processing response to ensure spec names are used...`);
+    const processedResponse = JSON.parse(JSON.stringify(parsedResponse)); // Deep copy
+    
+    // Create spec ID to name mapping for post-processing
+    const postProcessSpecIdToName = {};
+    Object.keys(specUsageData).forEach(role => {
+      Object.keys(specUsageData[role]).forEach(specId => {
+        postProcessSpecIdToName[specId] = specUsageData[role][specId].specName;
+      });
+    });
+    
+    // Function to replace spec IDs with names in text - more aggressive pattern matching
+    const replaceSpecIdsWithNames = (text) => {
+      if (typeof text !== 'string') return text;
+      let processed = text;
+      
+      // Replace "Spec [ID]" patterns
+      Object.keys(postProcessSpecIdToName).forEach(specId => {
+        const patterns = [
+          new RegExp(`\\bSpec\\s+${specId}\\b`, 'gi'),
+          new RegExp(`\\bSpec\\s*${specId}\\b`, 'gi'),
+          new RegExp(`\\b${specId}\\s*\\([^)]*\\)`, 'gi'), // Spec 264 (healer)
+          new RegExp(`\\bSpec\\s*${specId}\\s*\\([^)]*\\)`, 'gi') // Spec 264 (healer)
+        ];
+        
+        patterns.forEach(pattern => {
+          processed = processed.replace(pattern, postProcessSpecIdToName[specId]);
+        });
+      });
+      
+      // Remove spec IDs in parentheses like "Restoration (264)" -> "Restoration"
+      processed = processed.replace(/\s*\(\d+\)/g, '');
+      
+      // Also replace any remaining "Spec [number]" patterns with a generic message
+      processed = processed.replace(/\bSpec\s+\d+\b/gi, 'Unknown Spec');
+      
+      return processed;
+    };
+    
+    // Process metaSummary
+    if (processedResponse.metaSummary) {
+      processedResponse.metaSummary.summary = replaceSpecIdsWithNames(processedResponse.metaSummary.summary);
+      if (Array.isArray(processedResponse.metaSummary.keyInsights)) {
+        processedResponse.metaSummary.keyInsights = processedResponse.metaSummary.keyInsights.map(replaceSpecIdsWithNames);
+      }
     }
-    const mhValidation = validateMetaHealthResponse(parsedResponse);
+    
+    // Process balanceIssues
+    if (Array.isArray(processedResponse.balanceIssues)) {
+      processedResponse.balanceIssues.forEach(issue => {
+        issue.description = replaceSpecIdsWithNames(issue.description);
+      });
+    }
+    
+    // Process dominantPatterns if they exist
+    if (processedResponse.compositionAnalysis && Array.isArray(processedResponse.compositionAnalysis.dominantPatterns)) {
+      processedResponse.compositionAnalysis.dominantPatterns = processedResponse.compositionAnalysis.dominantPatterns.map(replaceSpecIdsWithNames);
+    }
+    
+    // Process roleAnalysis names
+    if (processedResponse.roleAnalysis) {
+      Object.keys(processedResponse.roleAnalysis).forEach(role => {
+        const roleData = processedResponse.roleAnalysis[role];
+        if (roleData.dominantSpecs) {
+          roleData.dominantSpecs.forEach(spec => {
+            if (spec.name && spec.name.includes('Spec ')) {
+              spec.name = postProcessSpecIdToName[spec.specId] || 'Unknown Spec';
+            }
+          });
+        }
+        if (roleData.underusedSpecs) {
+          roleData.underusedSpecs.forEach(spec => {
+            if (spec.name && spec.name.includes('Spec ')) {
+              spec.name = postProcessSpecIdToName[spec.specId] || 'Unknown Spec';
+            }
+          });
+        }
+      });
+    }
+    
+    // Process compositionAnalysis specNames
+    if (processedResponse.compositionAnalysis && processedResponse.compositionAnalysis.mostPopularGroup) {
+      if (processedResponse.compositionAnalysis.mostPopularGroup.specNames) {
+        processedResponse.compositionAnalysis.mostPopularGroup.specNames = 
+          processedResponse.compositionAnalysis.mostPopularGroup.specNames.map(specName => {
+            if (specName.includes('Spec ')) {
+              // Extract spec ID from "Spec 264" and convert to name
+              const specIdMatch = specName.match(/Spec\s+(\d+)/);
+              if (specIdMatch) {
+                const specId = specIdMatch[1];
+                return postProcessSpecIdToName[specId] || 'Unknown Spec';
+              }
+            }
+            return specName;
+          });
+      }
+    }
+    
+    // Use the processed response for validation
+    parsedResponse = processedResponse;
+
+    // Basic validation of AI response structure
+    let mhValidation = validateMetaHealthResponse(parsedResponse);
+    let validationRetryCount = 0;
+    const maxValidationRetries = 2;
+    
+    // If validation fails due to spec IDs, try to regenerate with stronger prompt
+    while (!mhValidation.ok && validationRetryCount < maxValidationRetries && mhValidation.errors.some(err => err.includes('spec IDs'))) {
+      validationRetryCount++;
+      console.log(`🔄 [AI] Validation failed due to spec IDs, retrying with stronger prompt (attempt ${validationRetryCount}/${maxValidationRetries})`);
+      
+      // Create an even stronger prompt
+      const strongerSystemPrompt = systemPrompt + `
+
+FINAL WARNING: You are being retried because you used spec IDs instead of spec names.
+You MUST use the spec names from the data. If you use "Spec [ID]" again, your response will be rejected.
+
+Examples of what you MUST write:
+- "Holy Paladin dominates with 60% usage" (NOT "Spec 264 dominates with 60% usage")
+- "Fire Mage and Protection Warrior are popular" (NOT "Spec 251 and Spec 73 are popular")
+- "Balance Druid is underused" (NOT "Spec 102 is underused")
+
+Use the spec names from the specName fields in the data.`;
+      
+      try {
+        const retryPrompt = {
+          ...openAIPrompt,
+          messages: [
+            { role: "system", content: strongerSystemPrompt },
+            { role: "user", content: userPrompt }
+          ]
+        };
+        
+        const retryResponse = await axios.post('https://api.openai.com/v1/chat/completions', retryPrompt, {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 210000
+        });
+        
+        const retryMessage = retryResponse.data.choices?.[0];
+        const retryContent = retryMessage?.message?.content || '';
+        
+        if (retryContent) {
+          parsedResponse = tryStandardParses(retryContent);
+          if (parsedResponse) {
+            mhValidation = validateMetaHealthResponse(parsedResponse);
+          }
+        }
+      } catch (retryError) {
+        console.warn(`⚠️ [AI] Retry ${validationRetryCount} failed:`, retryError.message);
+        break;
+      }
+    }
+    
     if (!mhValidation.ok) {
-      return res.status(500).json({ error: 'AI meta_health response failed validation', details: mhValidation.errors.slice(0, 10) });
+      return res.status(500).json({ error: 'AI meta_health response failed validation', details: mhValidation.errors.slice(0, 5) });
     }
 
-    // Remove duplicate specs within each role's dominant and underused specs
-    Object.keys(parsedResponse.roleAnalysis).forEach(role => {
-      const roleData = parsedResponse.roleAnalysis[role];
-      
-      // Remove duplicates from dominantSpecs
-      if (roleData.dominantSpecs && Array.isArray(roleData.dominantSpecs)) {
-        const seenDominant = new Set();
-        roleData.dominantSpecs = roleData.dominantSpecs.filter(spec => {
-          if (seenDominant.has(spec.specId)) {
-            console.log(`⚠️ [AI] Removed duplicate dominant spec ${spec.specId} from ${role}`);
-            return false;
-          }
-          seenDominant.add(spec.specId);
-          return true;
-        });
-      }
-      
-      // Remove duplicates from underusedSpecs
-      if (roleData.underusedSpecs && Array.isArray(roleData.underusedSpecs)) {
-        const seenUnderused = new Set();
-        roleData.underusedSpecs = roleData.underusedSpecs.filter(spec => {
-          if (seenUnderused.has(spec.specId)) {
-            console.log(`⚠️ [AI] Removed duplicate underused spec ${spec.specId} from ${role}`);
-            return false;
-          }
-          seenUnderused.add(spec.specId);
-          return true;
-        });
-      }
-    });
+
 
     // Cache the analysis result
     try {
