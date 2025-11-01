@@ -58,8 +58,58 @@ router.use(adminAuthMiddleware);
 
 // In-memory job registry for long-running admin tasks
 // Note: This is process-local and ephemeral; suitable for Render web service instances.
-// Keys are job ids (uuid), values: { status: 'running'|'success'|'error', startedAt, finishedAt?, result?, error? }
+// Keys are job ids (uuid), values: { status: 'running'|'success'|'error', startedAt, finishedAt?, updatedAt?, result?, error?, code? }
 const __adminJobRegistry = new Map();
+
+// Basic TTL + max-size eviction to prevent unbounded growth
+const JOB_REGISTRY_MAX = Number(process.env.ADMIN_JOB_REGISTRY_MAX || 200);
+const JOB_REGISTRY_TTL_MS = Number(process.env.ADMIN_JOB_TTL_MS || 24 * 60 * 60 * 1000); // 24h default
+const JOB_REGISTRY_SWEEP_MS = Number(process.env.ADMIN_JOB_CLEANUP_MS || 10 * 60 * 1000); // 10m default
+
+function cleanupJobRegistry() {
+  const now = Date.now();
+  // 1) TTL-based removal for completed jobs
+  for (const [id, entry] of __adminJobRegistry) {
+    const finishedAt = entry.finishedAt ? Date.parse(entry.finishedAt) : null;
+    const updatedAt = entry.updatedAt ? Date.parse(entry.updatedAt) : finishedAt || (entry.startedAt ? Date.parse(entry.startedAt) : null);
+    const age = updatedAt ? (now - updatedAt) : 0;
+    if ((entry.status === 'success' || entry.status === 'error') && JOB_REGISTRY_TTL_MS > 0 && age > JOB_REGISTRY_TTL_MS) {
+      __adminJobRegistry.delete(id);
+    }
+  }
+
+  // 2) Enforce max size: evict oldest completed jobs first, then oldest running only if still over cap
+  if (__adminJobRegistry.size > JOB_REGISTRY_MAX) {
+    const entries = Array.from(__adminJobRegistry.entries()).map(([id, e]) => {
+      const ts = e.updatedAt || e.finishedAt || e.startedAt || new Date(0).toISOString();
+      const isRunning = e.status === 'running';
+      return { id, isRunning, ts: Date.parse(ts) || 0 };
+    }).sort((a, b) => {
+      // completed first (isRunning false), then by oldest timestamp
+      if (a.isRunning !== b.isRunning) return a.isRunning ? 1 : -1;
+      return a.ts - b.ts;
+    });
+
+    for (const item of entries) {
+      if (__adminJobRegistry.size <= JOB_REGISTRY_MAX) break;
+      // skip running until only running remain
+      if (item.isRunning) continue;
+      __adminJobRegistry.delete(item.id);
+    }
+
+    // If still over cap, evict oldest running
+    if (__adminJobRegistry.size > JOB_REGISTRY_MAX) {
+      for (const item of entries) {
+        if (__adminJobRegistry.size <= JOB_REGISTRY_MAX) break;
+        __adminJobRegistry.delete(item.id);
+      }
+    }
+  }
+}
+
+setInterval(() => {
+  try { cleanupJobRegistry(); } catch (e) { console.warn('[ADMIN] job registry cleanup error:', e.message); }
+}, JOB_REGISTRY_SWEEP_MS);
 
 // Test endpoint for admin authentication
 router.get('/test', (req, res) => {
@@ -404,15 +454,18 @@ router.post('/raiderio/rebuild-top-cutoff-async', async (req, res) => {
   const overscanMode = strictMode && String(req.query.overscan || 'false').toLowerCase() === 'true';
 
   const jobId = uuidv4();
-  __adminJobRegistry.set(jobId, { status: 'running', startedAt: new Date().toISOString() });
+  __adminJobRegistry.set(jobId, { status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
 
   // Kick off background task
   (async () => {
     try {
       const result = await rebuildTopCutoffInternal({ season, region, strictMode, maxPagesPerDungeon, stallPagesThreshold, includePlayers, useDungeonAll, overscanMode });
-      __adminJobRegistry.set(jobId, { status: 'success', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), result });
+      __adminJobRegistry.set(jobId, { status: 'success', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), result });
     } catch (error) {
-      __adminJobRegistry.set(jobId, { status: 'error', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), error: error.message, code: error.status || 500 });
+      __adminJobRegistry.set(jobId, { status: 'error', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), error: error.message, code: error.status || 500 });
+    } finally {
+      // Opportunistic cleanup after each job completes
+      try { cleanupJobRegistry(); } catch (_) {}
     }
   })();
 
