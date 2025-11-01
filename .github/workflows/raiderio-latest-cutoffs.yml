@@ -22,7 +22,7 @@ jobs:
           curl --fail-with-body -X POST "https://api.render.com/v1/services/$SERVICE_ID/jobs" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"startCommand": "BACKFILL_REGIONS=us,eu,kr,tw BACKFILL_CONCURRENCY=1 BACKFILL_MAIN_SEASONS_ONLY=true BACKFILL_STRICT=true BACKFILL_MAX_PAGES=200 BACKFILL_STALL_PAGES=50 BACKFILL_INCLUDE_PLAYERS=false BACKFILL_DUNGEON_ALL=true BACKFILL_OVERSCAN=true npm run rio-latest-job"}' \
+            -d '{"startCommand": "JOB_LOCK_TTL_SECONDS=12600 BACKFILL_REGIONS=us,eu,kr,tw BACKFILL_CONCURRENCY=1 BACKFILL_MAIN_SEASONS_ONLY=true BACKFILL_STRICT=true BACKFILL_MAX_PAGES=200 BACKFILL_STALL_PAGES=50 BACKFILL_INCLUDE_PLAYERS=false BACKFILL_DUNGEON_ALL=true BACKFILL_OVERSCAN=true npm run rio-latest-job"}' \
             -w "\nHTTP Status: %{http_code}\n"
           echo "✅ Automation triggered successfully!"
         env:

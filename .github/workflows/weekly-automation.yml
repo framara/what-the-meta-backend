@@ -21,7 +21,7 @@ jobs:
           curl --fail-with-body -X POST "https://api.render.com/v1/services/$SERVICE_ID/jobs" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"startCommand": "npm run weekly-job"}' \
+            -d '{"startCommand": "JOB_LOCK_TTL_SECONDS=21600 npm run weekly-job"}' \
             -w "\nHTTP Status: %{http_code}\n"
           
           echo "✅ Automation triggered successfully!"
