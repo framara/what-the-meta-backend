@@ -56,6 +56,11 @@ const router = express.Router();
 // Apply admin authentication middleware to all routes
 router.use(adminAuthMiddleware);
 
+// In-memory job registry for long-running admin tasks
+// Note: This is process-local and ephemeral; suitable for Render web service instances.
+// Keys are job ids (uuid), values: { status: 'running'|'success'|'error', startedAt, finishedAt?, result?, error? }
+const __adminJobRegistry = new Map();
+
 // Test endpoint for admin authentication
 router.get('/test', (req, res) => {
   console.log(`🔐 [ADMIN] GET /admin/test`);
@@ -190,6 +195,183 @@ router.post('/raiderio/sync-static', async (req, res, next) => {
 // - Character profile checks use fields='mythic_plus_scores_by_season:<season>'.
 // - Concurrency and pacing are conservative to respect Raider.IO rate limits; transient 429/5xx
 //   responses are retried with backoff. Distribution is computed from the deduplicated qualifiers set.
+async function rebuildTopCutoffInternal({ season, region, strictMode, maxPagesPerDungeon, stallPagesThreshold, includePlayers, useDungeonAll, overscanMode }) {
+  if (!season) {
+    const e = new Error('Missing required query param: season');
+    e.status = 400;
+    throw e;
+  }
+
+  await db.ensureRaiderioCutoffTables();
+
+  // 1) cutoff and target
+  let cutoffs;
+  try {
+    cutoffs = await raiderIO.getSeasonCutoffs({ season, region });
+  } catch (e) {
+    const status = e?.response?.status;
+    if (status === 404) {
+      const err = new Error(`Cutoffs not available for season ${season} in region ${region}`);
+      err.status = 404;
+      throw err;
+    }
+    throw e;
+  }
+  const cutoffScore = cutoffs?.cutoffs?.p999?.all?.quantileMinValue ?? null;
+  const targetCount = cutoffs?.cutoffs?.p999?.all?.quantilePopulationCount ?? null;
+  if (cutoffScore == null) {
+    const e = new Error('Failed to resolve 0.1% cutoff score from Raider.IO payload');
+    e.status = 502;
+    throw e;
+  }
+
+  // 2) dungeons for season from static-data
+  // Pick expansion from season slug
+  let expansion_id = RAIDERIO_EXPANSION_IDS.THE_WAR_WITHIN;
+  if (typeof season === 'string') {
+    const s = season.toLowerCase();
+    if (s.includes('-df-')) expansion_id = RAIDERIO_EXPANSION_IDS.DRAGONFLIGHT;
+    else if (s.includes('-sl-')) expansion_id = RAIDERIO_EXPANSION_IDS.SHADOWLANDS;
+    else if (s.includes('-bfa-')) expansion_id = RAIDERIO_EXPANSION_IDS.BFA;
+    else if (s.includes('-tww-')) expansion_id = RAIDERIO_EXPANSION_IDS.THE_WAR_WITHIN;
+  }
+  const staticData = await raiderIO.getStaticData({ expansion_id });
+  const seasonBlock = (staticData?.seasons || []).find(s => s?.slug === season) || {};
+  let seasonDungeons = Array.isArray(seasonBlock?.dungeons) ? seasonBlock.dungeons : [];
+  if (seasonDungeons.length === 0) {
+    // Rely on static source only; if season block lacks dungeons, use expansion-wide list
+    seasonDungeons = staticData?.dungeons || [];
+  }
+  const dungeonSlugs = useDungeonAll ? ['all'] : seasonDungeons.map(d => d.slug).filter(Boolean);
+
+  // 3) crawl runs
+  const seen = new Set();
+  const qualifying = new Map();
+  let pagesFetched = 0;
+
+  const profileLimit = pLimit(4);
+  async function fetchRunsForDungeon(slug) {
+    let noNewPagesInRow = 0; // per-dungeon stall counter
+    let page = 0;
+    let allowBeyondCap = false; // enable continuing past max_pages when overscan is active and stall not reached
+    while (true) {
+      if (!allowBeyondCap && page >= maxPagesPerDungeon) break;
+      const beforePageCount = qualifying.size;
+      let resp;
+      // per-page retry loop for transient errors
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          resp = await raiderIO.getTopRuns({ season, region, dungeon: slug, page });
+          break;
+        } catch (e) {
+          const status = e?.response?.status;
+          if (status === 429) {
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          if (status === 502 || status === 503 || status === 504) {
+            // exponential backoff for gateway/server errors
+            await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+            continue;
+          }
+          if (attempt === 2) {
+            // Give up this page and proceed; do not fail entire job
+            resp = null;
+          }
+        }
+      }
+      const rankings = resp?.rankings || [];
+      if (!Array.isArray(rankings) || rankings.length === 0) break;
+      pagesFetched++;
+      for (const r of rankings) {
+        const roster = r?.run?.roster || [];
+        for (const m of roster) {
+          const c = m?.character || m;
+          const realm = c?.realm?.slug || c?.realm?.name || c?.realm;
+          const name = c?.name || c?.character?.name;
+          if (!realm || !name) continue;
+          const key = `${region}:${String(realm).toLowerCase()}:${String(name).toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          // fetch profile to confirm score with limited concurrency
+          await profileLimit(async () => {
+            try {
+              // Request scores for the specific season being processed
+              const fields = `mythic_plus_scores_by_season:${season}`;
+              const profile = await raiderIO.getCharacterProfile({ region, realm, name, fields });
+
+              // Find the season entry matching the requested season
+              const scoresBySeason = profile?.mythic_plus_scores_by_season || [];
+              const seasonEntry = scoresBySeason.find(s => s?.season === season || s?.season?.slug === season) || scoresBySeason[0];
+
+              const score = seasonEntry?.scores?.all
+                ?? seasonEntry?.segments?.all?.score
+                ?? null;
+
+              if (typeof score === 'number' && score >= cutoffScore) {
+                const className = c?.class?.name || m?.class || 'Unknown';
+                const specName = c?.spec?.name || m?.spec || 'Unknown';
+                qualifying.set(key, { region, realm_slug: String(realm).toLowerCase(), name: String(name), class: className, spec: specName, score });
+              }
+            } catch (_) { /* ignore */ }
+          });
+        }
+      }
+      // Update global stall counter
+      const addedThisPage = qualifying.size - beforePageCount;
+      if (addedThisPage <= 0) {
+        noNewPagesInRow++;
+      } else {
+        noNewPagesInRow = 0;
+      }
+      if (strictMode) {
+        // If overscan is enabled and we're at/over the cap but have not hit stall yet,
+        // permit continuing beyond the cap regardless of whether the boundary page added qualifiers.
+        if (overscanMode && !allowBeyondCap && page + 1 >= maxPagesPerDungeon && noNewPagesInRow < stallPagesThreshold) {
+          allowBeyondCap = true;
+        }
+        if (noNewPagesInRow >= stallPagesThreshold) break; // stop this dungeon early
+      } else if (typeof targetCount === 'number' && qualifying.size >= targetCount) {
+        break;
+      }
+      // gentle pacing between pages
+      await new Promise(r => setTimeout(r, 300));
+      page += 1;
+    }
+  }
+
+  // limit parallel dungeons
+  const dungeonLimit = pLimit(strictMode ? 1 : 2);
+  const tasks = dungeonSlugs.map(slug => dungeonLimit(() => fetchRunsForDungeon(slug)));
+  await Promise.all(tasks);
+
+  // 4) distribution and persist
+  const distribution = {};
+  for (const p of qualifying.values()) {
+    if (!distribution[p.class]) distribution[p.class] = { total: 0, specs: {} };
+    if (!distribution[p.class].specs[p.spec]) distribution[p.class].specs[p.spec] = 0;
+    distribution[p.class].total += 1;
+    distribution[p.class].specs[p.spec] += 1;
+  }
+
+  const snapshotId = await db.insertCutoffSnapshot({
+    season_slug: season,
+    region,
+    cutoff_score: cutoffScore,
+    target_count: targetCount,
+    total_qualifying: qualifying.size,
+    source_pages: pagesFetched,
+    dungeon_count: dungeonSlugs.length,
+    distribution
+  });
+  if (includePlayers) {
+    await db.bulkInsertCutoffPlayers(snapshotId, Array.from(qualifying.values()));
+  }
+
+  return { ok: true, snapshotId, season, region, cutoffScore, targetCount, totalQualifying: qualifying.size, distribution, playersPersisted: includePlayers };
+}
+
+// Synchronous route (existing behavior)
 router.post('/raiderio/rebuild-top-cutoff', async (req, res, next) => {
   try {
     const { season } = req.query;
@@ -200,173 +382,49 @@ router.post('/raiderio/rebuild-top-cutoff', async (req, res, next) => {
     const includePlayers = String(req.query.include_players || 'false').toLowerCase() === 'true';
     const useDungeonAll = String(req.query.dungeon_all || 'false').toLowerCase() === 'true';
     const overscanMode = strictMode && String(req.query.overscan || 'false').toLowerCase() === 'true';
-    if (!season) return res.status(400).json({ error: true, message: 'Missing required query param: season' });
 
-    await db.ensureRaiderioCutoffTables();
-
-    // 1) cutoff and target
-    let cutoffs;
-    try {
-      cutoffs = await raiderIO.getSeasonCutoffs({ season, region });
-    } catch (e) {
-      const status = e?.response?.status;
-      if (status === 404) {
-        return res.status(404).json({ error: true, message: `Cutoffs not available for season ${season} in region ${region}` });
-      }
-      throw e;
-    }
-    const cutoffScore = cutoffs?.cutoffs?.p999?.all?.quantileMinValue ?? null;
-    const targetCount = cutoffs?.cutoffs?.p999?.all?.quantilePopulationCount ?? null;
-    if (cutoffScore == null) return res.status(502).json({ error: true, message: 'Failed to resolve 0.1% cutoff score from Raider.IO payload' });
-
-    // 2) dungeons for season from static-data
-    // Pick expansion from season slug
-    let expansion_id = RAIDERIO_EXPANSION_IDS.THE_WAR_WITHIN;
-    if (typeof season === 'string') {
-      const s = season.toLowerCase();
-      if (s.includes('-df-')) expansion_id = RAIDERIO_EXPANSION_IDS.DRAGONFLIGHT;
-      else if (s.includes('-sl-')) expansion_id = RAIDERIO_EXPANSION_IDS.SHADOWLANDS;
-      else if (s.includes('-bfa-')) expansion_id = RAIDERIO_EXPANSION_IDS.BFA;
-      else if (s.includes('-tww-')) expansion_id = RAIDERIO_EXPANSION_IDS.THE_WAR_WITHIN;
-    }
-    const staticData = await raiderIO.getStaticData({ expansion_id });
-    const seasonBlock = (staticData?.seasons || []).find(s => s?.slug === season) || {};
-    let seasonDungeons = Array.isArray(seasonBlock?.dungeons) ? seasonBlock.dungeons : [];
-    if (seasonDungeons.length === 0) {
-      // Rely on static source only; if season block lacks dungeons, use expansion-wide list
-      seasonDungeons = staticData?.dungeons || [];
-    }
-    const dungeonSlugs = useDungeonAll ? ['all'] : seasonDungeons.map(d => d.slug).filter(Boolean);
-
-    // 3) crawl runs
-    const concurrency = 4;
-    const seen = new Set();
-    const qualifying = new Map();
-    let pagesFetched = 0;
-
-    const profileLimit = pLimit(4);
-    async function fetchRunsForDungeon(slug) {
-      let noNewPagesInRow = 0; // per-dungeon stall counter
-      let page = 0;
-      let allowBeyondCap = false; // enable continuing past max_pages when overscan is active and stall not reached
-      while (true) {
-        if (!allowBeyondCap && page >= maxPagesPerDungeon) break;
-        const beforePageCount = qualifying.size;
-        let resp;
-        // per-page retry loop for transient errors
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            resp = await raiderIO.getTopRuns({ season, region, dungeon: slug, page });
-            break;
-          } catch (e) {
-            const status = e?.response?.status;
-            if (status === 429) {
-              await new Promise(r => setTimeout(r, 1500));
-              continue;
-            }
-            if (status === 502 || status === 503 || status === 504) {
-              // exponential backoff for gateway/server errors
-              await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
-              continue;
-            }
-            if (attempt === 2) {
-              // Give up this page and proceed; do not fail entire job
-              resp = null;
-            }
-          }
-        }
-        const rankings = resp?.rankings || [];
-        if (!Array.isArray(rankings) || rankings.length === 0) break;
-        pagesFetched++;
-        for (const r of rankings) {
-          const roster = r?.run?.roster || [];
-          for (const m of roster) {
-            const c = m?.character || m;
-            const realm = c?.realm?.slug || c?.realm?.name || c?.realm;
-            const name = c?.name || c?.character?.name;
-            if (!realm || !name) continue;
-            const key = `${region}:${String(realm).toLowerCase()}:${String(name).toLowerCase()}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            // fetch profile to confirm score with limited concurrency
-            await profileLimit(async () => {
-              try {
-                // Request scores for the specific season being processed
-                const fields = `mythic_plus_scores_by_season:${season}`;
-                const profile = await raiderIO.getCharacterProfile({ region, realm, name, fields });
-
-                // Find the season entry matching the requested season
-                const scoresBySeason = profile?.mythic_plus_scores_by_season || [];
-                const seasonEntry = scoresBySeason.find(s => s?.season === season || s?.season?.slug === season) || scoresBySeason[0];
-
-                const score = seasonEntry?.scores?.all
-                  ?? seasonEntry?.segments?.all?.score
-                  ?? null;
-
-                if (typeof score === 'number' && score >= cutoffScore) {
-                  const className = c?.class?.name || m?.class || 'Unknown';
-                  const specName = c?.spec?.name || m?.spec || 'Unknown';
-                  qualifying.set(key, { region, realm_slug: String(realm).toLowerCase(), name: String(name), class: className, spec: specName, score });
-                }
-              } catch (_) { /* ignore */ }
-            });
-          }
-        }
-        // Update global stall counter
-        const addedThisPage = qualifying.size - beforePageCount;
-        if (addedThisPage <= 0) {
-          noNewPagesInRow++;
-        } else {
-          noNewPagesInRow = 0;
-        }
-        if (strictMode) {
-          // If overscan is enabled and we're at/over the cap but have not hit stall yet,
-          // permit continuing beyond the cap regardless of whether the boundary page added qualifiers.
-          if (overscanMode && !allowBeyondCap && page + 1 >= maxPagesPerDungeon && noNewPagesInRow < stallPagesThreshold) {
-            allowBeyondCap = true;
-          }
-          if (noNewPagesInRow >= stallPagesThreshold) break; // stop this dungeon early
-        } else if (typeof targetCount === 'number' && qualifying.size >= targetCount) {
-          break;
-        }
-        // gentle pacing between pages
-        await new Promise(r => setTimeout(r, 300));
-        page += 1;
-      }
-    }
-
-    // limit parallel dungeons
-    const dungeonLimit = pLimit(strictMode ? 1 : 2);
-    const tasks = dungeonSlugs.map(slug => dungeonLimit(() => fetchRunsForDungeon(slug)));
-    await Promise.all(tasks);
-
-    // 4) distribution and persist
-    const distribution = {};
-    for (const p of qualifying.values()) {
-      if (!distribution[p.class]) distribution[p.class] = { total: 0, specs: {} };
-      if (!distribution[p.class].specs[p.spec]) distribution[p.class].specs[p.spec] = 0;
-      distribution[p.class].total += 1;
-      distribution[p.class].specs[p.spec] += 1;
-    }
-
-    const snapshotId = await db.insertCutoffSnapshot({
-      season_slug: season,
-      region,
-      cutoff_score: cutoffScore,
-      target_count: targetCount,
-      total_qualifying: qualifying.size,
-      source_pages: pagesFetched,
-      dungeon_count: dungeonSlugs.length,
-      distribution
-    });
-    if (includePlayers) {
-      await db.bulkInsertCutoffPlayers(snapshotId, Array.from(qualifying.values()));
-    }
-
-    res.json({ ok: true, snapshotId, season, region, cutoffScore, targetCount, totalQualifying: qualifying.size, distribution, playersPersisted: includePlayers });
+    const result = await rebuildTopCutoffInternal({ season, region, strictMode, maxPagesPerDungeon, stallPagesThreshold, includePlayers, useDungeonAll, overscanMode });
+    res.json(result);
   } catch (err) {
+    const status = err?.status || 500;
+    if (!res.headersSent) res.status(status);
     next(err);
   }
+});
+
+// Async variant to avoid Render proxy timeouts for long-running operations
+router.post('/raiderio/rebuild-top-cutoff-async', async (req, res) => {
+  const { season } = req.query;
+  const region = (req.query.region || 'us').toLowerCase();
+  const strictMode = String(req.query.strict || 'false').toLowerCase() === 'true';
+  const maxPagesPerDungeon = Number.isFinite(Number(req.query.max_pages)) ? Number(req.query.max_pages) : 40;
+  const stallPagesThreshold = Number.isFinite(Number(req.query.stall_pages)) ? Number(req.query.stall_pages) : 50;
+  const includePlayers = String(req.query.include_players || 'false').toLowerCase() === 'true';
+  const useDungeonAll = String(req.query.dungeon_all || 'false').toLowerCase() === 'true';
+  const overscanMode = strictMode && String(req.query.overscan || 'false').toLowerCase() === 'true';
+
+  const jobId = uuidv4();
+  __adminJobRegistry.set(jobId, { status: 'running', startedAt: new Date().toISOString() });
+
+  // Kick off background task
+  (async () => {
+    try {
+      const result = await rebuildTopCutoffInternal({ season, region, strictMode, maxPagesPerDungeon, stallPagesThreshold, includePlayers, useDungeonAll, overscanMode });
+      __adminJobRegistry.set(jobId, { status: 'success', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), result });
+    } catch (error) {
+      __adminJobRegistry.set(jobId, { status: 'error', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), error: error.message, code: error.status || 500 });
+    }
+  })();
+
+  res.json({ status: 'OK', job_id: jobId, note: 'Use GET /admin/raiderio/rebuild-top-cutoff-status?job_id=...' });
+});
+
+router.get('/raiderio/rebuild-top-cutoff-status', async (req, res) => {
+  const jobId = req.query.job_id;
+  if (!jobId) return res.status(400).json({ error: true, message: 'Missing job_id' });
+  const entry = __adminJobRegistry.get(jobId);
+  if (!entry) return res.status(404).json({ error: true, message: 'Job not found' });
+  res.json(entry);
 });
 async function populateDungeons() {
   const region = 'us';

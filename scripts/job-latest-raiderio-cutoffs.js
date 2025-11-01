@@ -186,6 +186,41 @@ async function rebuildCutoff(season, region, opts = {}) {
   if (opts.include_players === true) params.set('include_players', 'true');
   if (opts.dungeon_all === true) params.set('dungeon_all', 'true');
   if (opts.overscan === true) params.set('overscan', 'true');
+
+  const useAsync = String(process.env.RIO_USE_ASYNC || 'true').toLowerCase() === 'true';
+  if (useAsync) {
+    // 1) Start async job
+    const startEndpoint = `/admin/raiderio/rebuild-top-cutoff-async?${params.toString()}`;
+    const startResp = await makeRequest('POST', startEndpoint, {});
+    const jobId = startResp?.job_id;
+    if (!jobId) throw new Error('Failed to start async cutoff rebuild (missing job_id)');
+
+    // 2) Poll status until completion
+    const pollEndpoint = `/admin/raiderio/rebuild-top-cutoff-status?job_id=${encodeURIComponent(jobId)}`;
+    const started = Date.now();
+    const maxMs = Number(process.env.RIO_ASYNC_MAX_MS || 60 * 60 * 1000); // default 60m
+    const intervalMs = Number(process.env.RIO_ASYNC_POLL_MS || 5000);
+    while (true) {
+      if (Date.now() - started > maxMs) {
+        throw new Error(`Async cutoff rebuild timed out after ${Math.round(maxMs/1000)}s (job_id=${jobId})`);
+      }
+      const statusResp = await makeRequest('GET', pollEndpoint, null, 3);
+      const status = statusResp?.status;
+      if (status === 'success') {
+        return statusResp.result;
+      }
+      if (status === 'error') {
+        const msg = statusResp?.error || 'unknown error';
+        const code = statusResp?.code || 500;
+        const e = new Error(`Async cutoff rebuild failed (${code}): ${msg}`);
+        e.code = code;
+        throw e;
+      }
+      await sleep(intervalMs);
+    }
+  }
+
+  // Fallback: synchronous endpoint
   const endpoint = `/admin/raiderio/rebuild-top-cutoff?${params.toString()}`;
   return await makeRequest('POST', endpoint, {});
 }
