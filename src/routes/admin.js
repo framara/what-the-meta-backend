@@ -78,7 +78,7 @@ function cleanupJobRegistry() {
     }
   }
 
-  // 2) Enforce max size: evict oldest completed jobs first, then oldest running only if still over cap
+  // 2) Enforce max size: evict oldest completed jobs first; never evict running jobs
   if (__adminJobRegistry.size > JOB_REGISTRY_MAX) {
     const entries = Array.from(__adminJobRegistry.entries()).map(([id, e]) => {
       const ts = e.updatedAt || e.finishedAt || e.startedAt || new Date(0).toISOString();
@@ -97,12 +97,9 @@ function cleanupJobRegistry() {
       __adminJobRegistry.delete(item.id);
     }
 
-    // If still over cap, evict oldest running
+    // If still over cap, we keep running jobs and log a warning; they will be cleaned later
     if (__adminJobRegistry.size > JOB_REGISTRY_MAX) {
-      for (const item of entries) {
-        if (__adminJobRegistry.size <= JOB_REGISTRY_MAX) break;
-        __adminJobRegistry.delete(item.id);
-      }
+      console.warn(`[ADMIN] Job registry at capacity (${__adminJobRegistry.size}/${JOB_REGISTRY_MAX}); deferring cleanup of running jobs.`);
     }
   }
 }
@@ -454,15 +451,16 @@ router.post('/raiderio/rebuild-top-cutoff-async', async (req, res) => {
   const overscanMode = strictMode && String(req.query.overscan || 'false').toLowerCase() === 'true';
 
   const jobId = uuidv4();
-  __adminJobRegistry.set(jobId, { status: 'running', startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  const startedAt = new Date().toISOString();
+  __adminJobRegistry.set(jobId, { status: 'running', startedAt, updatedAt: startedAt });
 
   // Kick off background task
   (async () => {
     try {
       const result = await rebuildTopCutoffInternal({ season, region, strictMode, maxPagesPerDungeon, stallPagesThreshold, includePlayers, useDungeonAll, overscanMode });
-      __adminJobRegistry.set(jobId, { status: 'success', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), result });
+      __adminJobRegistry.set(jobId, { status: 'success', startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), result });
     } catch (error) {
-      __adminJobRegistry.set(jobId, { status: 'error', startedAt: __adminJobRegistry.get(jobId)?.startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), error: error.message, code: error.status || 500 });
+      __adminJobRegistry.set(jobId, { status: 'error', startedAt, finishedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), error: error.message, code: error.status || 500 });
     } finally {
       // Opportunistic cleanup after each job completes
       try { cleanupJobRegistry(); } catch (_) {}
