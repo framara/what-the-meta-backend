@@ -8,16 +8,34 @@ const axios = require('axios');
 // Configuration for Render DAILY Job
 // Prefer INTERNAL_API_BASE when present (explicit server URL), else API_BASE_URL, else localhost
 const API_BASE_URL = process.env.INTERNAL_API_BASE || process.env.API_BASE_URL || 'http://localhost:3000';
+// Job-wide deadline control to prevent overruns (addresses timeout checks around request loop)
+const JOB_START_TS = Date.now();
+const ENV_MAX_MS = Number(process.env.JOB_MAX_RUNTIME_MS || 0);
+const TTL_SEC = Number(process.env.JOB_LOCK_TTL_SECONDS || 0);
+// If explicit max runtime set, honor it; else derive from lock TTL with a 60s buffer
+const JOB_DEADLINE = ENV_MAX_MS > 0
+  ? (JOB_START_TS + ENV_MAX_MS)
+  : (TTL_SEC > 0 ? (JOB_START_TS + TTL_SEC * 1000 - 60000) : null);
+function remainingJobTimeMs() {
+  return JOB_DEADLINE ? (JOB_DEADLINE - Date.now()) : Infinity;
+}
 const REGIONS = ['us', 'eu', 'kr', 'tw'];
 const LOCK_NAME = process.env.JOB_LOCK_NAME || 'automation-global-lock';
 let HAS_LOCK = false;
 
 // Helper function to make API requests with retry logic
-// options: { timeoutMs?: number }
+// options: { timeoutMs?: number, deadlineTs?: number }
 async function makeRequest(method, endpoint, data = null, retries = 3, options = {}) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const url = `${API_BASE_URL}${endpoint}`;
+      const deadlineTs = options.deadlineTs || JOB_DEADLINE || null;
+      if (deadlineTs) {
+        const remaining = deadlineTs - Date.now();
+        if (remaining <= 0) {
+          throw new Error('Job deadline exceeded before request');
+        }
+      }
       const config = {
         method,
         url,
@@ -25,8 +43,13 @@ async function makeRequest(method, endpoint, data = null, retries = 3, options =
           'Content-Type': 'application/json',
           'X-Admin-API-Key': process.env.ADMIN_API_KEY
         },
-        // Default to 2 hours, but allow per-call override (e.g. keep under Cloudflare 100s limits)
-        timeout: Number.isFinite(options.timeoutMs) ? options.timeoutMs : 7200000,
+        // Default to 2 hours, but allow per-call override, and cap by remaining job time
+        timeout: (() => {
+          const base = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 7200000;
+          if (!deadlineTs) return base;
+          const remaining = Math.max(0, deadlineTs - Date.now() - 2000); // 2s safety
+          return Math.max(1000, Math.min(base, remaining));
+        })(),
       };  
 
       if (data) {
@@ -38,8 +61,11 @@ async function makeRequest(method, endpoint, data = null, retries = 3, options =
         throw new Error('ADMIN_API_KEY environment variable is not set');
       }
 
-      console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries}${options.timeoutMs ? `, timeout=${options.timeoutMs}ms` : ''})`);
+      console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries}, timeout=${config.timeout}ms)`);
       const response = await axios(config);
+      if (deadlineTs && Date.now() > deadlineTs) {
+        throw new Error('Job deadline exceeded after request');
+      }
       console.log(`[DAILY] ${method} ${endpoint} - Status: ${response.status}`);
       return response.data;
     } catch (error) {
@@ -68,7 +94,14 @@ async function makeRequest(method, endpoint, data = null, retries = 3, options =
         delay = Math.pow(2, attempt) * 1000;
         console.log(`[DAILY] Retrying in ${delay}ms...`);
       }
-      
+      // Respect the job-wide deadline when delaying
+      const rem = remainingJobTimeMs();
+      if (rem <= 0) {
+        throw new Error('Job deadline exceeded before retry');
+      }
+      if (rem < delay + 500) {
+        delay = Math.max(0, rem - 500);
+      }
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -77,6 +110,10 @@ async function makeRequest(method, endpoint, data = null, retries = 3, options =
 // Poll the API until the database is responsive. Uses a lightweight stats endpoint.
 async function waitForDatabaseReady(maxWaitMs = 10 * 60 * 1000, pingIntervalMs = 5000) {
   const started = Date.now();
+  const rem0 = remainingJobTimeMs();
+  if (Number.isFinite(rem0)) {
+    maxWaitMs = Math.max(1000, Math.min(maxWaitMs, rem0 - 2000));
+  }
   let tries = 0;
   while (Date.now() - started < maxWaitMs) {
     tries += 1;
@@ -92,6 +129,10 @@ async function waitForDatabaseReady(maxWaitMs = 10 * 60 * 1000, pingIntervalMs =
         console.log(`[DAILY] Waiting for database readiness... retrying in ${pingIntervalMs}ms`);
       } else {
         console.log(`[DAILY] Transient error while checking DB readiness (${msg || 'unknown'}). Retrying in ${pingIntervalMs}ms`);
+      }
+      const remNow = remainingJobTimeMs();
+      if (remNow <= pingIntervalMs + 500) {
+        pingIntervalMs = Math.max(250, remNow - 500);
       }
       await new Promise(r => setTimeout(r, pingIntervalMs));
     }
@@ -290,6 +331,9 @@ async function importLeaderboardData() {
   let batches = 0;
 
   while (true) {
+    if (JOB_DEADLINE && Date.now() > JOB_DEADLINE) {
+      throw new Error('Job deadline exceeded during import');
+    }
     const query = qs({ batch_size: batchSize, max_batches: maxBatchesPerRequest, concurrency, delete_processed: deleteProcessed });
     try {
       const resp = await makeRequest('POST', `/admin/import-all-leaderboard-json-fast?${query}`);
