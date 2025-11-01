@@ -203,7 +203,9 @@ async function runLatestCutoffsJob() {
   console.log(`[RIO-LATEST] API Base URL: ${API_BASE_URL}`);
 
   try {
-    const lock = await acquireJobLock();
+    // Read TTL from environment variable if set
+    const ttl = Number(process.env.JOB_LOCK_TTL_SECONDS || 0) || undefined;
+    const lock = await acquireJobLock(ttl);
     if (!lock.acquired) {
       return { status: 'skipped', reason: 'Another job is running', holder: lock.current };
     }

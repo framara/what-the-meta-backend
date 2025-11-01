@@ -363,8 +363,11 @@ async function runPreviousPeriodAutomation() {
   console.log(`[WEEKLY] API Base URL: ${API_BASE_URL}`);
   
   try {
-    // Acquire global job lock (default TTL handled by server)
-    const lock = await acquireJobLock();
+    // Read TTL from environment variable if set
+    const ttl = Number(process.env.JOB_LOCK_TTL_SECONDS || 0) || undefined;
+    
+    // Acquire global job lock
+    const lock = await acquireJobLock(ttl);
     if (!lock.acquired) {
       return {
         status: 'skipped',
