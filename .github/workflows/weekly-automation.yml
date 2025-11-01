@@ -2,8 +2,8 @@ name: Weekly What The Meta Automation
 
 on:
   schedule:
-    # Run weekly at 4:00 AM UTC (adjust timezone as needed)
-    - cron: '0 4 * * 4'
+    # Run weekly at 03:00 AM UTC on Thursday (between daily jobs at 02:00 and 06:00)
+    - cron: '0 3 * * 4'
   workflow_dispatch: # Allow manual trigger
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
           curl --fail-with-body -X POST "https://api.render.com/v1/services/$SERVICE_ID/jobs" \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"startCommand": "JOB_LOCK_TTL_SECONDS=21600 npm run weekly-job"}' \
+            -d '{"startCommand": "JOB_LOCK_TTL_SECONDS=10800 npm run weekly-job"}' \
             -w "\nHTTP Status: %{http_code}\n"
           
           echo "✅ Automation triggered successfully!"
