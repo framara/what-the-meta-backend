@@ -6,16 +6,36 @@ try { require('dotenv').config(); } catch (_) {}
 const axios = require('axios');
 
 // Configuration for Render DAILY Job
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
+// Prefer INTERNAL_API_BASE when present (explicit server URL), else API_BASE_URL, else localhost
+const API_BASE_URL = process.env.INTERNAL_API_BASE || process.env.API_BASE_URL || 'http://localhost:3000';
+// Job-wide deadline control to prevent overruns (addresses timeout checks around request loop)
+const JOB_START_TS = Date.now();
+const ENV_MAX_MS = Number(process.env.JOB_MAX_RUNTIME_MS || 0);
+const TTL_SEC = Number(process.env.JOB_LOCK_TTL_SECONDS || 0);
+// If explicit max runtime set, honor it; else derive from lock TTL with a 60s buffer
+const JOB_DEADLINE = ENV_MAX_MS > 0
+  ? (JOB_START_TS + ENV_MAX_MS)
+  : (TTL_SEC > 0 ? (JOB_START_TS + TTL_SEC * 1000 - 60000) : null);
+function remainingJobTimeMs() {
+  return JOB_DEADLINE ? (JOB_DEADLINE - Date.now()) : Infinity;
+}
 const REGIONS = ['us', 'eu', 'kr', 'tw'];
 const LOCK_NAME = process.env.JOB_LOCK_NAME || 'automation-global-lock';
 let HAS_LOCK = false;
 
 // Helper function to make API requests with retry logic
-async function makeRequest(method, endpoint, data = null, retries = 3) {
+// options: { timeoutMs?: number, deadlineTs?: number }
+async function makeRequest(method, endpoint, data = null, retries = 3, options = {}) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const url = `${API_BASE_URL}${endpoint}`;
+      const deadlineTs = options.deadlineTs || JOB_DEADLINE || null;
+      if (deadlineTs) {
+        const remaining = deadlineTs - Date.now();
+        if (remaining <= 0) {
+          throw new Error('Job deadline exceeded before request');
+        }
+      }
       const config = {
         method,
         url,
@@ -23,7 +43,13 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
           'Content-Type': 'application/json',
           'X-Admin-API-Key': process.env.ADMIN_API_KEY
         },
-        timeout: 7200000, // 2 hours
+        // Default to 2 hours, but allow per-call override, and cap by remaining job time
+        timeout: (() => {
+          const base = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 7200000;
+          if (!deadlineTs) return base;
+          const remaining = Math.max(0, deadlineTs - Date.now() - 2000); // 2s safety
+          return Math.max(1000, Math.min(base, remaining));
+        })(),
       };  
 
       if (data) {
@@ -35,8 +61,11 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
         throw new Error('ADMIN_API_KEY environment variable is not set');
       }
 
-      console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries})`);
+      console.log(`[DAILY] Making ${method} request to ${endpoint} (attempt ${attempt}/${retries}, timeout=${config.timeout}ms)`);
       const response = await axios(config);
+      if (deadlineTs && Date.now() > deadlineTs) {
+        throw new Error('Job deadline exceeded after request');
+      }
       console.log(`[DAILY] ${method} ${endpoint} - Status: ${response.status}`);
       return response.data;
     } catch (error) {
@@ -48,24 +77,67 @@ async function makeRequest(method, endpoint, data = null, retries = 3) {
       }
       
       // Special handling for database connection errors - longer delays
-      const isDatabaseError = errorMessage.includes('not yet accepting connections') || 
-                             errorMessage.includes('connection error') ||
-                             errorMessage.includes('Client has encountered a connection error');
+  const isDatabaseError = errorMessage.includes('not yet accepting connections') || 
+             errorMessage.includes('connection error') ||
+             errorMessage.includes('Client has encountered a connection error') ||
+             errorMessage.includes('Connection terminated unexpectedly') ||
+             errorMessage.includes('ECONNRESET') ||
+             errorMessage.includes('EHOSTUNREACH');
       
       let delay;
       if (isDatabaseError) {
         // Longer delays for database connectivity issues
-        delay = Math.min(30000, Math.pow(2, attempt) * 5000); // Up to 30s delay
+        delay = Math.min(120000, Math.pow(2, attempt) * 5000); // Up to 120s delay
         console.log(`[DAILY] Database connectivity issue detected. Retrying in ${delay}ms...`);
       } else {
         // Standard exponential backoff for other errors
         delay = Math.pow(2, attempt) * 1000;
         console.log(`[DAILY] Retrying in ${delay}ms...`);
       }
-      
+      // Respect the job-wide deadline when delaying
+      const rem = remainingJobTimeMs();
+      if (rem <= 0) {
+        throw new Error('Job deadline exceeded before retry');
+      }
+      if (rem < delay + 500) {
+        delay = Math.max(0, rem - 500);
+      }
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
+}
+
+// Poll the API until the database is responsive. Uses a lightweight stats endpoint.
+async function waitForDatabaseReady(maxWaitMs = 10 * 60 * 1000, pingIntervalMs = 5000) {
+  const started = Date.now();
+  const rem0 = remainingJobTimeMs();
+  if (Number.isFinite(rem0)) {
+    maxWaitMs = Math.max(1000, Math.min(maxWaitMs, rem0 - 2000));
+  }
+  let tries = 0;
+  while (Date.now() - started < maxWaitMs) {
+    tries += 1;
+    try {
+      await makeRequest('GET', '/admin/db/stats', null, 1, { timeoutMs: 15000 });
+      if (tries > 1) {
+        console.log(`[DAILY] Database became ready after ${(Date.now() - started) / 1000}s and ${tries} checks.`);
+      }
+      return true;
+    } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || '';
+      if (msg && (msg.includes('not yet accepting connections') || msg.includes('connection') || msg.includes('timeout'))) {
+        console.log(`[DAILY] Waiting for database readiness... retrying in ${pingIntervalMs}ms`);
+      } else {
+        console.log(`[DAILY] Transient error while checking DB readiness (${msg || 'unknown'}). Retrying in ${pingIntervalMs}ms`);
+      }
+      const remNow = remainingJobTimeMs();
+      if (remNow <= pingIntervalMs + 500) {
+        pingIntervalMs = Math.max(250, remNow - 500);
+      }
+      await new Promise(r => setTimeout(r, pingIntervalMs));
+    }
+  }
+  throw new Error(`Database did not become ready within ${Math.round(maxWaitMs / 1000)}s`);
 }
 
 // Job lock helpers
@@ -113,7 +185,8 @@ async function acquireJobLock(ttlSeconds = undefined) {
 async function releaseJobLock() {
   try {
     if (!HAS_LOCK) return;
-    await makeRequest('POST', '/admin/job-lock/release', { lock_name: LOCK_NAME, owner: getLockOwner() }, 1);
+    // Try multiple times with short timeouts to avoid long hangs
+    await makeRequest('POST', '/admin/job-lock/release', { lock_name: LOCK_NAME, owner: getLockOwner() }, 5, { timeoutMs: 20000 });
     HAS_LOCK = false;
     console.log('[DAILY] Released job lock');
   } catch (err) {
@@ -224,7 +297,7 @@ async function importLeaderboardData() {
   // Check database connectivity before starting import
   try {
     console.log('[DAILY] Verifying database connectivity...');
-    await makeRequest('GET', '/admin/db/stats', null, 1);
+  await makeRequest('GET', '/admin/db/stats', null, 1, { timeoutMs: 15000 });
     console.log('[DAILY] Database connectivity verified');
   } catch (error) {
     console.error('[DAILY ERROR] Database connectivity check failed:', error.message);
@@ -233,7 +306,7 @@ async function importLeaderboardData() {
     
     // Retry once more
     try {
-      await makeRequest('GET', '/admin/db/stats', null, 1);
+  await makeRequest('GET', '/admin/db/stats', null, 1, { timeoutMs: 15000 });
       console.log('[DAILY] Database connectivity verified after retry');
     } catch (retryError) {
       throw new Error(`Database not ready for import after retry: ${retryError.message}`);
@@ -258,6 +331,9 @@ async function importLeaderboardData() {
   let batches = 0;
 
   while (true) {
+    if (JOB_DEADLINE && Date.now() > JOB_DEADLINE) {
+      throw new Error('Job deadline exceeded during import');
+    }
     const query = qs({ batch_size: batchSize, max_batches: maxBatchesPerRequest, concurrency, delete_processed: deleteProcessed });
     try {
       const resp = await makeRequest('POST', `/admin/import-all-leaderboard-json-fast?${query}`);
@@ -292,7 +368,7 @@ async function clearOutput() {
   console.log('[DAILY] Clearing output directory');
   
   try {
-    const response = await makeRequest('POST', '/admin/clear-output');
+  const response = await makeRequest('POST', '/admin/clear-output', null, 3, { timeoutMs: 90000 });
     console.log('[DAILY] Successfully cleared output directory');
     return response;
   } catch (error) {
@@ -314,7 +390,9 @@ async function cleanupLeaderboard(seasonId) {
   console.log(`[DAILY] Cleaning up leaderboard data for season ${seasonId}`);
   
   try {
-    const response = await makeRequest('POST', '/admin/cleanup-leaderboard', { season_id: seasonId });
+    // Ensure DB is up before starting a potentially long-running cleanup
+    await waitForDatabaseReady();
+    const response = await makeRequest('POST', '/admin/cleanup-leaderboard', { season_id: seasonId }, 6, { timeoutMs: 90000 });
     console.log('[DAILY] Successfully cleaned up leaderboard data');
     return response;
   } catch (error) {
@@ -337,7 +415,7 @@ async function refreshViews() {
   
   try {
     // Use async endpoint to avoid timeout issues
-    const response = await makeRequest('POST', '/admin/refresh-views-async');
+  const response = await makeRequest('POST', '/admin/refresh-views-async', null, 3, { timeoutMs: 60000 });
     console.log('[DAILY] Successfully started materialized views refresh in background');
     console.log('[DAILY] Check server logs for progress updates on materialized views refresh');
     
@@ -387,7 +465,8 @@ async function vacuumAnalyze() {
   console.log('[DAILY] Performing VACUUM ANALYZE on database');
   
   try {
-    const response = await makeRequest('POST', '/admin/vacuum-analyze');
+    await waitForDatabaseReady();
+    const response = await makeRequest('POST', '/admin/vacuum-analyze', null, 3, { timeoutMs: 5 * 60 * 1000 });
     console.log('[DAILY] Successfully completed VACUUM ANALYZE');
     return response;
   } catch (error) {
@@ -448,6 +527,10 @@ async function runOneOffAutomation() {
     console.log(`\n[DAILY] DAILY automation completed successfully at ${endTime.toISOString()}`);
     console.log(`[DAILY] Total duration: ${duration} seconds`);
     
+    // Release the lock with retries and DB readiness check
+    try {
+      await waitForDatabaseReady(5 * 60 * 1000, 5000);
+    } catch (_) {}
     await releaseJobLock();
 
     return {
@@ -472,6 +555,10 @@ async function runOneOffAutomation() {
     console.error(`[DAILY] Total duration: ${duration} seconds`);
     console.error(`[DAILY] Error: ${error.message}`);
     
+    // Try to release lock even on failure; tolerate DB restarts
+    try {
+      await waitForDatabaseReady(5 * 60 * 1000, 5000);
+    } catch (_) {}
     await releaseJobLock();
 
     return {
